@@ -1,0 +1,20 @@
+{
+  "name": "tabstoepub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test --import tsx tests/**/*.test.ts",
+    "vendorize": "node scripts/vendorize.mjs",
+    "test:e2e": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@playwright/test": "^1.42.0",
+    "@types/chrome": "^0.0.256",
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.1",
+    "typescript": "^5.5.4"
+  }
+}
