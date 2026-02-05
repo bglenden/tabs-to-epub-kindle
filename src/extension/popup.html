@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tabs to EPUB</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        min-width: 260px;
+        background: #f7f3ee;
+        color: #232323;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px 0;
+        letter-spacing: 0.02em;
+      }
+      .actions {
+        display: grid;
+        gap: 8px;
+      }
+      button {
+        appearance: none;
+        border: none;
+        padding: 10px 12px;
+        text-align: left;
+        background: #1f1f1f;
+        color: #f7f3ee;
+        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: transform 0.1s ease, background 0.15s ease;
+      }
+      button.secondary {
+        background: #4b4b4b;
+      }
+      button.ghost {
+        background: #e6ded4;
+        color: #1f1f1f;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+        transform: none;
+      }
+      .status {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #444;
+        min-height: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Tabs to EPUB</h1>
+    <div class="actions">
+      <button data-action="save">Save tab(s) to EPUB</button>
+      <button data-action="save-close">Save tab(s) to EPUB and close</button>
+      <button class="secondary" data-action="queue-add">Add tab(s) to EPUB queue</button>
+      <button class="secondary" data-action="queue-save">Save queued tabs to EPUB</button>
+      <button class="ghost" data-action="queue-clear">Clear EPUB queue</button>
+      <button class="ghost" data-action="reset-output">Change output folder (prompt next save)</button>
+    </div>
+    <div class="status" id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

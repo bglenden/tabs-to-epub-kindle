@@ -10,6 +10,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Tabs to EPUB"
+    "default_title": "Tabs to EPUB",
+    "default_popup": "extension/popup.html"
   }
 }

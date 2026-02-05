@@ -6,15 +6,26 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test --import tsx tests/**/*.test.ts",
+    "test:coverage": "c8 --check-coverage --statements 80 --branches 60 --functions 80 --lines 80 -r text -r html node --test --import tsx tests/**/*.test.ts",
     "vendorize": "node scripts/vendorize.mjs",
-    "test:e2e": "npm run build && playwright test"
+    "test:e2e": "npm run build && playwright test",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "dev": "node scripts/dev.mjs",
+    "prepare": "husky install"
   },
   "devDependencies": {
+    "@eslint/js": "^9.18.0",
     "@mozilla/readability": "^0.6.0",
     "@playwright/test": "^1.42.0",
     "@types/chrome": "^0.0.256",
     "@types/node": "^20.11.30",
+    "c8": "^10.1.2",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0",
+    "husky": "^9.0.11",
     "tsx": "^4.7.1",
+    "typescript-eslint": "^8.26.0",
     "typescript": "^5.5.4"
   }
 }

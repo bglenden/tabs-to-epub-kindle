@@ -54,6 +54,13 @@ export type TestMessage =
   | { type: 'TEST_GET_QUEUE' }
   | { type: 'TEST_CLEAR_QUEUE' };
 
+export type UiMessage =
+  | { type: 'UI_SAVE_TAB_IDS'; tabIds: number[]; closeTabs?: boolean }
+  | { type: 'UI_ADD_QUEUE'; tabIds: number[] }
+  | { type: 'UI_SAVE_QUEUE' }
+  | { type: 'UI_CLEAR_QUEUE' }
+  | { type: 'UI_RESET_OUTPUT' };
+
 export interface TestSuccessBase {
   ok: true;
 }
@@ -91,3 +98,5 @@ export type TestResponse =
   | TestQueueResponse
   | TestSuccessBase
   | TestErrorResponse;
+
+export type UiResponse = TestSuccessBase | TestErrorResponse;

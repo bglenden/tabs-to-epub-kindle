@@ -25,3 +25,7 @@ export function readLocalFiles(zipBytes: Uint8Array): ZipFileEntry[] {
   }
   return files;
 }
+
+export function extractText(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}

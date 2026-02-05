@@ -19,7 +19,7 @@ npm run build
 
 ## Usage
 
-Right‑click a tab and choose **Tabs to EPUB**:
+Right‑click inside a page (or right‑click the extension toolbar icon) and choose **Tabs to EPUB**:
 
 - **Save tab(s) to EPUB**: saves the highlighted tabs (or just the clicked tab).
 - **Save tab(s) to EPUB and close**: same, then closes the tabs.
@@ -28,9 +28,17 @@ Right‑click a tab and choose **Tabs to EPUB**:
 - **Clear EPUB queue**: clears the queue.
 - **Change output folder (prompt next save)**: resets output directory so the next save asks again.
 
+You can also click the extension toolbar icon to open a popup with the same actions.
+
 ### Output folder behavior
 
 On the first save, Chrome shows a save dialog. The extension remembers that folder and tries to reuse it on subsequent saves. If Chrome rejects the path (e.g., outside the default downloads folder), it will prompt again and update the stored folder.
+
+### File naming
+
+Saved files use a timestamp plus the unique domains in the selected tabs, for example:
+
+`2026-02-04T20_34_11 nytimes cnn wikipedia.epub`
 
 ## Notes
 

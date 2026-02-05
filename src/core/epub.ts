@@ -99,7 +99,7 @@ function buildNavXhtml(articles: NormalizedArticle[], lang: string): string {
   return `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${escapeXml(lang)}">\n<head>\n  <meta charset="utf-8"/>\n  <title>Table of Contents</title>\n  <link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n  <nav epub:type="toc">\n    <h1>Contents</h1>\n    <ol>\n${items}\n    </ol>\n  </nav>\n</body>\n</html>`;
 }
 
-function buildNcx(articles: NormalizedArticle[], title: string, uuid: string, lang: string): string {
+function buildNcx(articles: NormalizedArticle[], title: string, uuid: string): string {
   const navPoints = articles
     .map((article, index) => {
       const label = escapeXml(article.title || `Article ${index + 1}`);
@@ -177,7 +177,7 @@ export function buildEpub(rawArticles: ArticleInput[], options: BuildEpubOptions
   });
 
   const nav = buildNavXhtml(articles, lang);
-  const ncx = buildNcx(articles, title, uuid, lang);
+  const ncx = buildNcx(articles, title, uuid);
   const opf = buildOpf({ title, uuid, lang, articles, assets, modified });
   const css = defaultCss();
 

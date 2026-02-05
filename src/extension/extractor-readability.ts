@@ -1,5 +1,3 @@
-/* global Readability */
-
 type ReadabilityArticle = {
   title?: string;
   byline?: string | null;
@@ -50,7 +48,10 @@ type ReadabilityConstructor = new (doc: Document) => { parse(): ReadabilityArtic
   const BOILERPLATE_ARIA_RE =
     /(navigation|nav|breadcrumb|share|social|related|advert|sponsor|promo|newsletter|subscribe|comment|consent|privacy|cookie|preference|optout)/i;
   const BOILERPLATE_CLASS_RE =
-    /(^|[\s_-])(nav|navbar|subnav|menu|header|footer|related|recirc|promo|sponsor|advert|adslot|ads?|newsletter|subscribe|social|share|comment|comments|breadcrumb|cookie|consent|privacy|preference|optout|gdpr|onetrust|outbrain|taboola|recommend|recommended)([\s_-]|$)/i;
+    /(^|[\s_-])(nav|navbar|subnav|menu|header|footer|related|recirc|recirculation|promo|sponsor|advert|adslot|ads?|newsletter|subscribe|social|share|comment|comments|breadcrumb|cookie|consent|privacy|preference|optout|gdpr|onetrust|outbrain|taboola|recommend|recommended|bottom-sheet|bottomsheet|slug)([\s_-]|$)/i;
+  const BOILERPLATE_TEXT_RE =
+    /^(advertisement(\s*skip\s*advertisement)?|skip\s*advertisement|related content|sponsored(\s*content)?|paid post|recommended for you)$/i;
+  const IMAGE_LABEL_RE = /^image$/i;
 
   function isBoilerplateNode(node: Element): boolean {
     const tag = node.tagName.toLowerCase();
@@ -83,9 +84,16 @@ type ReadabilityConstructor = new (doc: Document) => { parse(): ReadabilityArtic
     return false;
   }
 
+  function normalizeText(value: string): string {
+    return value.replace(/\s+/g, ' ').trim();
+  }
+
   function isLinkHeavy(node: Element): boolean {
-    const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+    const text = normalizeText(node.textContent || '');
     const tag = node.tagName.toLowerCase();
+    if (tag === 'article' || tag === 'main' || tag === 'body') {
+      return false;
+    }
     const links = Array.from(node.querySelectorAll('a'));
     if (links.length < 3) {
       return false;
@@ -110,14 +118,63 @@ type ReadabilityConstructor = new (doc: Document) => { parse(): ReadabilityArtic
     return false;
   }
 
+  type BoilerplateTextKind = 'generic' | 'image' | null;
+
+  function getBoilerplateTextKind(node: Element): BoilerplateTextKind {
+    const text = normalizeText(node.textContent || '');
+    if (!text || text.length > 140) {
+      return null;
+    }
+    if (IMAGE_LABEL_RE.test(text)) {
+      return 'image';
+    }
+    if (BOILERPLATE_TEXT_RE.test(text)) {
+      return 'generic';
+    }
+    return null;
+  }
+
+  function findBoilerplateContainer(node: Element): Element {
+    let current: Element | null = node;
+    for (let depth = 0; depth < 4 && current; depth += 1) {
+      const tag = current.tagName.toLowerCase();
+      if (tag === 'article' || tag === 'main' || tag === 'body') {
+        break;
+      }
+      const text = normalizeText(current.textContent || '');
+      if (
+        (tag === 'section' || tag === 'aside' || tag === 'div' || tag === 'nav') &&
+        (text.length <= 400 || isLinkHeavy(current) || isBoilerplateNode(current))
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return node;
+  }
+
   function preCleanDocument(doc: Document): void {
     PRE_CLEAN_SELECTORS.forEach((selector) => {
       doc.querySelectorAll(selector).forEach((node) => node.remove());
     });
-    const toRemove: Element[] = [];
+    const toRemove = new Set<Element>();
     doc.body?.querySelectorAll('*').forEach((node) => {
       if (isBoilerplateNode(node) || isLinkHeavy(node)) {
-        toRemove.push(node);
+        toRemove.add(node);
+        return;
+      }
+      const boilerplateKind = getBoilerplateTextKind(node);
+      if (!boilerplateKind) {
+        return;
+      }
+      if (boilerplateKind === 'image') {
+        if (!node.querySelector('img')) {
+          toRemove.add(node);
+        }
+        return;
+      }
+      if (boilerplateKind === 'generic') {
+        toRemove.add(findBoilerplateContainer(node));
       }
     });
     toRemove.forEach((node) => node.remove());

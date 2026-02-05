@@ -50,6 +50,10 @@ async function build() {
     path.join(repoRoot, 'src', 'extension', 'test.html'),
     path.join(distDir, 'extension', 'test.html')
   );
+  await copyFile(
+    path.join(repoRoot, 'src', 'extension', 'popup.html'),
+    path.join(distDir, 'extension', 'popup.html')
+  );
 }
 
 build().catch((err) => {

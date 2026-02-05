@@ -1,5 +1,6 @@
 import { buildEpub } from '../core/epub.js';
 import type { EpubAsset } from '../core/types.js';
+import { buildFilenameForArticles } from './filename.js';
 import type {
   ExtractMessage,
   ExtractResponse,
@@ -11,7 +12,9 @@ import type {
   TestMessage,
   TestQueueResponse,
   TestResponse,
-  TestSaveResponse
+  TestSaveResponse,
+  UiMessage,
+  UiResponse
 } from './types.js';
 
 const MENU_PARENT = 'tabstoepub-root';
@@ -137,7 +140,8 @@ async function embedImages(articles: ExtractedArticleWithTab[]): Promise<Embedde
       }
     }
 
-    const { images: _ignored, ...rest } = article;
+    const { images: _images, ...rest } = article;
+    void _images;
     updatedArticles.push({
       ...rest,
       content
@@ -339,29 +343,74 @@ function dirname(filePath: string): string {
   return idx >= 0 ? normalized.slice(0, idx) : '';
 }
 
+function replaceFilenamePart(filePath: string, replace: (name: string) => string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const idx = normalized.lastIndexOf('/');
+  if (idx < 0) {
+    return replace(normalized);
+  }
+  const dir = normalized.slice(0, idx + 1);
+  const base = normalized.slice(idx + 1);
+  return `${dir}${replace(base)}`;
+}
+
+function stripFilenameColons(filePath: string): string {
+  return replaceFilenamePart(filePath, (name) => name.replace(/:/g, '-'));
+}
+
 async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number> {
   const settings = await getSettings();
-  const blobPart: BlobPart = bytes.slice().buffer;
-  const blob = new Blob([blobPart], { type: 'application/epub+zip' });
-  const url = URL.createObjectURL(blob);
+  let url = '';
+  let shouldRevoke = false;
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    const blobPart: BlobPart = bytes.slice().buffer;
+    const blob = new Blob([blobPart], { type: 'application/epub+zip' });
+    url = URL.createObjectURL(blob);
+    shouldRevoke = true;
+  } else {
+    const base64 = base64FromBytes(bytes);
+    url = `data:application/epub+zip;base64,${base64}`;
+  }
   let downloadId: number;
+  const primaryPath = buildOutputPath(settings.outputDir, filename);
 
   try {
     downloadId = await downloadsDownload({
       url,
-      filename: buildOutputPath(settings.outputDir, filename),
+      filename: primaryPath,
       saveAs: !settings.outputDir
     });
-  } catch (err) {
-    await setSettings({ outputDir: null });
-    downloadId = await downloadsDownload({
-      url,
-      filename,
-      saveAs: true
-    });
+  } catch {
+    const strippedPath = stripFilenameColons(primaryPath);
+    if (strippedPath !== primaryPath) {
+      try {
+        downloadId = await downloadsDownload({
+          url,
+          filename: strippedPath,
+          saveAs: !settings.outputDir
+        });
+      } catch {
+        await setSettings({ outputDir: null });
+        const fallbackPath = stripFilenameColons(filename);
+        downloadId = await downloadsDownload({
+          url,
+          filename: fallbackPath,
+          saveAs: true
+        });
+      }
+    } else {
+      await setSettings({ outputDir: null });
+      downloadId = await downloadsDownload({
+        url,
+        filename,
+        saveAs: true
+      });
+    }
   }
 
-  pendingDownloads.set(downloadId, url);
+  if (shouldRevoke) {
+    pendingDownloads.set(downloadId, url);
+  }
   if (!settings.outputDir) {
     pendingDirCapture.add(downloadId);
   }
@@ -415,9 +464,11 @@ async function buildEpubFromTabs(tabs: chrome.tabs.Tab[]): Promise<BuildTabsResu
   }
   const embedded = await embedImages(articles);
   const title = articles.length === 1 ? articles[0].title : undefined;
+  const outputFilename = buildFilenameForArticles(embedded.articles);
   const { bytes, filename } = buildEpub(embedded.articles, {
     title,
-    assets: embedded.assets
+    assets: embedded.assets,
+    filename: outputFilename
   });
   return {
     bytes,
@@ -483,42 +534,48 @@ async function handleResetOutput(): Promise<void> {
 }
 
 function registerContextMenus(): void {
-  // Omit contexts entirely to use Chrome's default ("all") and avoid
-  // platform-specific context validation failures.
+  const menuContexts: chrome.contextMenus.ContextType[] = ['page', 'action'];
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MENU_PARENT,
-      title: 'Tabs to EPUB'
+      title: 'Tabs to EPUB',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_SAVE,
       parentId: MENU_PARENT,
-      title: 'Save tab(s) to EPUB'
+      title: 'Save tab(s) to EPUB',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_SAVE_CLOSE,
       parentId: MENU_PARENT,
-      title: 'Save tab(s) to EPUB and close'
+      title: 'Save tab(s) to EPUB and close',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_ADD_QUEUE,
       parentId: MENU_PARENT,
-      title: 'Add tab(s) to EPUB queue'
+      title: 'Add tab(s) to EPUB queue',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_SAVE_QUEUE,
       parentId: MENU_PARENT,
-      title: 'Save queued tabs to EPUB'
+      title: 'Save queued tabs to EPUB',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_CLEAR_QUEUE,
       parentId: MENU_PARENT,
-      title: 'Clear EPUB queue'
+      title: 'Clear EPUB queue',
+      contexts: menuContexts
     });
     chrome.contextMenus.create({
       id: MENU_RESET_OUTPUT,
       parentId: MENU_PARENT,
-      title: 'Change output folder (prompt next save)'
+      title: 'Change output folder (prompt next save)',
+      contexts: menuContexts
     });
   });
 }
@@ -587,6 +644,10 @@ function serializeTestResult(result: BuildTabsResult & { bytes: Uint8Array; file
 
 function isTestMessage(message: unknown): message is TestMessage {
   return Boolean(message) && typeof message === 'object' && typeof (message as TestMessage).type === 'string';
+}
+
+function isUiMessage(message: unknown): message is UiMessage {
+  return Boolean(message) && typeof message === 'object' && typeof (message as UiMessage).type === 'string';
 }
 
 chrome.runtime.onMessage.addListener(
@@ -671,6 +732,87 @@ chrome.runtime.onMessage.addListener(
       .then((response) => sendResponse(response))
       .catch((err) => {
         const errorMessage = err instanceof Error ? err.message : 'Test command failed';
+        sendResponse({ ok: false, error: errorMessage });
+      });
+
+    return true;
+  }
+);
+
+chrome.runtime.onMessage.addListener(
+  (message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: UiResponse) => void) => {
+    if (!isUiMessage(message) || !message.type.startsWith('UI_')) {
+      return;
+    }
+
+    if (!isTrustedSender(sender)) {
+      sendResponse({ ok: false, error: 'Unauthorized' });
+      return;
+    }
+
+    (async (): Promise<UiResponse> => {
+      switch (message.type) {
+        case 'UI_SAVE_TAB_IDS': {
+          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
+          if (requested.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          const tabs = await tabsQuery({ currentWindow: true });
+          const tabMap = new Map<number, chrome.tabs.Tab>();
+          tabs.forEach((tab) => {
+            if (typeof tab.id === 'number') {
+              tabMap.set(tab.id, tab);
+            }
+          });
+          const selected = requested
+            .map((id) => tabMap.get(id))
+            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          if (selected.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          await handleSaveTabs(selected, { closeTabs: Boolean(message.closeTabs) });
+          return { ok: true };
+        }
+        case 'UI_ADD_QUEUE': {
+          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
+          if (requested.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          const tabs = await tabsQuery({ currentWindow: true });
+          const tabMap = new Map<number, chrome.tabs.Tab>();
+          tabs.forEach((tab) => {
+            if (typeof tab.id === 'number') {
+              tabMap.set(tab.id, tab);
+            }
+          });
+          const selected = requested
+            .map((id) => tabMap.get(id))
+            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          if (selected.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          await handleAddToQueue(selected);
+          return { ok: true };
+        }
+        case 'UI_SAVE_QUEUE': {
+          await handleSaveQueue();
+          return { ok: true };
+        }
+        case 'UI_CLEAR_QUEUE': {
+          await handleClearQueue();
+          return { ok: true };
+        }
+        case 'UI_RESET_OUTPUT': {
+          await handleResetOutput();
+          return { ok: true };
+        }
+        default:
+          return { ok: false, error: 'Unknown command' };
+      }
+    })()
+      .then((response) => sendResponse(response))
+      .catch((err) => {
+        const errorMessage = err instanceof Error ? err.message : 'Request failed';
         sendResponse({ ok: false, error: errorMessage });
       });
 
