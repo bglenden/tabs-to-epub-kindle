@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tabs to EPUB & Kindle",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Save one or more open tabs as a Kindle-friendly EPUB and optionally email it to your Kindle.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmoAwlttMtQzieqkaByBZrvVcqlceL/m0RolDLGrLxSZfqfUcqfJORCZ2KkDgGENnMRaMHaytYGt1sRboSmJAgDqWNOqcexBIQNgNWxVQS4vxRqDBZUSv0NrSsAinbVb2c3I3HdUvYlvDUOBPOS5n0JdpxduuYtkDE9pncbO5khhRXt4tRA4bGNq4UuZzHagHbZI4tQgXYrGzVIjCQTLpZ50A/pFC+jocAIZnXUSRekUt9iYTpJlo0cVm1O6GH9shRScTOaoY+/72BaS6VZnyoBBGoqJFEAI5UmGq6BCC553bFv5En+di5XCTloXxwhkhZlzn31f9HMreDYcedmGmswIDAQAB",
   "icons": {
