@@ -1,5 +1,5 @@
 {
-  "name": "tabstoepub",
+  "name": "tabs-to-epub-kindle",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -22,10 +22,11 @@
     "@types/node": "^20.11.30",
     "c8": "^10.1.2",
     "eslint": "^9.18.0",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^15.14.0",
     "husky": "^9.0.11",
     "tsx": "^4.7.1",
-    "typescript-eslint": "^8.26.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.26.0"
   }
 }

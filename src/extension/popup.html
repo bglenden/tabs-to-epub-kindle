@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Tabs to EPUB</title>
+    <title>Tabs to EPUB & Kindle</title>
     <style>
       :root {
         color-scheme: light;
@@ -36,9 +36,6 @@
         cursor: pointer;
         transition: transform 0.1s ease, background 0.15s ease;
       }
-      button.secondary {
-        background: #4b4b4b;
-      }
       button.ghost {
         background: #e6ded4;
         color: #1f1f1f;
@@ -47,6 +44,20 @@
         opacity: 0.6;
         cursor: default;
         transform: none;
+      }
+      .option-row {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #232323;
+      }
+      .option-row label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+      }
+      .option-row input[type="checkbox"] {
+        margin: 0;
       }
       .dir-row {
         margin-top: 10px;
@@ -101,19 +112,19 @@
     </style>
   </head>
   <body>
-    <h1>Tabs to EPUB</h1>
+    <h1>Tabs to EPUB & Kindle</h1>
     <div class="actions">
-      <button data-action="save">Save tab(s) to EPUB</button>
-      <button data-action="save-email">Save tab(s) to EPUB and email to Kindle</button>
-      <button data-action="save-close">Save tab(s) to EPUB and close</button>
-      <button class="secondary" data-action="queue-add">Add tab(s) to EPUB queue</button>
-      <button class="secondary" data-action="queue-save">Save queued tabs to EPUB</button>
-      <button class="ghost" data-action="queue-clear">Clear EPUB queue</button>
+      <button data-action="save">Save tabs to EPUB</button>
+      <button data-action="save-close">Save tabs to EPUB and close</button>
+    </div>
+    <div class="option-row">
+      <label><input type="checkbox" id="email-kindle" /> Email to Kindle</label>
     </div>
     <div class="dir-row">
       <span id="dir-status">No output folder chosen</span>
       <div class="dir-buttons">
         <button id="dir-pick" class="ghost">Choose Folder</button>
+        <button id="dir-downloads" class="ghost">Use Downloads</button>
         <button id="dir-clear" class="ghost" style="display:none">Clear</button>
       </div>
     </div>

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLocalFiles, extractText } from '../helpers.js';
-import type { TestMessage, TestResponse } from '../../src/extension/types.js';
+import type { TestMessage, TestResponse, UiMessage, UiResponse } from '../../src/extension/types.js';
 
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO4B9pUAAAAASUVORK5CYII=';
@@ -154,7 +154,10 @@ interface TestListTabsResponse {
   tabs: Array<{ id?: number; url?: string; title?: string; active?: boolean }>;
 }
 
-type TestApi = { send: (message: TestMessage) => Promise<TestResponse> };
+type TestApi = {
+  send: (message: TestMessage) => Promise<TestResponse>;
+  sendUi?: (message: UiMessage) => Promise<UiResponse>;
+};
 
 async function sendTestMessage<T extends TestResponse>(page: Page, message: TestMessage): Promise<T> {
   return page.evaluate((msg) => {

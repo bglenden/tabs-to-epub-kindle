@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Tabs to EPUB",
+  "name": "Tabs to EPUB & Kindle",
   "version": "0.1.0",
-  "description": "Save one or more open tabs as a Kindle-friendly EPUB.",
+  "description": "Save one or more open tabs as a Kindle-friendly EPUB and optionally email it to your Kindle.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmoAwlttMtQzieqkaByBZrvVcqlceL/m0RolDLGrLxSZfqfUcqfJORCZ2KkDgGENnMRaMHaytYGt1sRboSmJAgDqWNOqcexBIQNgNWxVQS4vxRqDBZUSv0NrSsAinbVb2c3I3HdUvYlvDUOBPOS5n0JdpxduuYtkDE9pncbO5khhRXt4tRA4bGNq4UuZzHagHbZI4tQgXYrGzVIjCQTLpZ50A/pFC+jocAIZnXUSRekUt9iYTpJlo0cVm1O6GH9shRScTOaoY+/72BaS6VZnyoBBGoqJFEAI5UmGq6BCC553bFv5En+di5XCTloXxwhkhZlzn31f9HMreDYcedmGmswIDAQAB",
+  "icons": {
+    "16": "extension/icons/icon-16.png",
+    "48": "extension/icons/icon-48.png",
+    "128": "extension/icons/icon-128.png"
+  },
   "permissions": ["contextMenus", "scripting", "storage", "downloads", "tabs", "identity"],
   "oauth2": {
     "client_id": "31183752331-dv8sgdo3hc9k8mchoo7ofaoebi7jhsu9.apps.googleusercontent.com",
@@ -15,7 +20,11 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Tabs to EPUB",
+    "default_title": "Tabs to EPUB & Kindle",
+    "default_icon": {
+      "16": "extension/icons/icon-16.png",
+      "48": "extension/icons/icon-48.png"
+    },
     "default_popup": "extension/popup.html"
   }
 }

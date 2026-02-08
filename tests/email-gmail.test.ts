@@ -3,8 +3,8 @@ import { buildMimeMessage, encodeBase64Url, sendGmailMessage } from '../src/exte
 
 const request = {
   to: 'kindle@example.com',
-  subject: 'Tabs to EPUB',
-  bodyText: 'Attached EPUB from Tabs to EPUB.',
+  subject: 'Tabs to EPUB & Kindle',
+  bodyText: 'Attached EPUB from Tabs to EPUB & Kindle.',
   attachment: {
     filename: 'example.epub',
     mimeType: 'application/epub+zip',
@@ -14,7 +14,7 @@ const request = {
 
 const mime = buildMimeMessage(request);
 assert.match(mime, /To: kindle@example\.com/);
-assert.match(mime, /Subject: Tabs to EPUB/);
+assert.match(mime, /Subject: Tabs to EPUB & Kindle/);
 assert.match(mime, /Content-Type: multipart\/mixed; boundary="/);
 assert.match(mime, /Content-Disposition: attachment; filename="example\.epub"/);
 
@@ -79,3 +79,25 @@ const badRequestFetch: typeof fetch = async () => {
 await assert.rejects(() => sendGmailMessage(request, badRequestClient, badRequestFetch), /Bad request payload/);
 assert.equal(badRequestTokenCalls, 1);
 assert.equal(badRequestCalls, 1);
+
+// Size limit: a ~25 MB attachment should be rejected before getting a token.
+const largeBytes = new Uint8Array(25 * 1024 * 1024);
+const largeRequest = {
+  to: 'kindle@example.com',
+  subject: 'Big EPUB',
+  bodyText: '',
+  attachment: { filename: 'big.epub', mimeType: 'application/epub+zip', bytes: largeBytes }
+};
+let sizeCheckTokenCalls = 0;
+const sizeCheckClient = {
+  async getToken(): Promise<string> {
+    sizeCheckTokenCalls += 1;
+    return 'should-not-be-used';
+  },
+  async clearToken(): Promise<void> {}
+};
+await assert.rejects(
+  () => sendGmailMessage(largeRequest, sizeCheckClient),
+  /too large to send via Gmail/
+);
+assert.equal(sizeCheckTokenCalls, 0, 'should not request a token when attachment is too large');

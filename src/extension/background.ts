@@ -9,10 +9,8 @@ import type {
   ExtractedArticleWithTab,
   EmbeddedResult,
   ImageToken,
-  QueueEntry,
   Settings,
   TestMessage,
-  TestQueueResponse,
   TestResponse,
   TestSaveResponse,
   UiBuildEpubResponse,
@@ -23,16 +21,14 @@ import type {
 const MENU_PARENT = 'tabstoepub-root';
 const MENU_SAVE = 'tabstoepub-save';
 const MENU_SAVE_CLOSE = 'tabstoepub-save-close';
-const MENU_SAVE_EMAIL = 'tabstoepub-save-email';
-const MENU_ADD_QUEUE = 'tabstoepub-add-queue';
-const MENU_SAVE_QUEUE = 'tabstoepub-save-queue';
-const MENU_CLEAR_QUEUE = 'tabstoepub-clear-queue';
+const MENU_EMAIL_KINDLE = 'tabstoepub-email-kindle';
 const SETTINGS_KEY = 'tabstoepub-settings';
-const QUEUE_KEY = 'tabstoepub-queue';
 
 const DEFAULT_SETTINGS: Settings = {
   testMode: false,
-  kindleEmail: null
+  kindleEmail: null,
+  useDefaultDownloads: false,
+  emailToKindle: false
 };
 
 const pendingDownloads = new Map<number, string>();
@@ -176,15 +172,6 @@ async function setSettings(next: Partial<Settings>): Promise<Settings> {
   const updated = { ...current, ...next };
   await storageSet({ [SETTINGS_KEY]: updated });
   return updated;
-}
-
-async function getQueue(): Promise<QueueEntry[]> {
-  const queue = await storageGet<QueueEntry[]>(QUEUE_KEY);
-  return Array.isArray(queue) ? queue : [];
-}
-
-async function setQueue(queue: QueueEntry[]): Promise<void> {
-  await storageSet({ [QUEUE_KEY]: queue });
 }
 
 function tabsQuery(query: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> {
@@ -339,6 +326,8 @@ async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number
     // Fall through to chrome.downloads
   }
 
+  const settings = await getSettings();
+
   let url = '';
   let shouldRevoke = false;
   if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
@@ -354,7 +343,7 @@ async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number
   const downloadId = await downloadsDownload({
     url,
     filename,
-    saveAs: true
+    saveAs: !settings.useDefaultDownloads
   });
 
   if (shouldRevoke) {
@@ -452,44 +441,13 @@ async function handleSaveTabs(
   }
 }
 
-async function handleAddToQueue(tabs: chrome.tabs.Tab[]): Promise<void> {
-  const queue = await getQueue();
-  const existing = new Set(queue.map((entry) => entry.tabId));
-  const additions = tabs
-    .filter((tab) => typeof tab.id === 'number' && !existing.has(tab.id))
-    .map((tab) => ({ tabId: tab.id as number, title: tab.title || 'Untitled' }));
-  await setQueue([...queue, ...additions]);
-}
-
-async function handleSaveQueue(): Promise<void> {
-  const queue = await getQueue();
-  if (queue.length === 0) {
-    return;
-  }
-  const tabs = await tabsQuery({ currentWindow: true });
-  const tabMap = new Map<number, chrome.tabs.Tab>();
-  tabs.forEach((tab) => {
-    if (typeof tab.id === 'number') {
-      tabMap.set(tab.id, tab);
-    }
-  });
-  const queuedTabs = queue
-    .map((entry) => tabMap.get(entry.tabId))
-    .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
-  await handleSaveTabs(queuedTabs, { closeTabs: false });
-  await setQueue([]);
-}
-
-async function handleClearQueue(): Promise<void> {
-  await setQueue([]);
-}
-
-function registerContextMenus(): void {
+async function registerContextMenus(): Promise<void> {
   const menuContexts: chrome.contextMenus.ContextType[] = ['page', 'action'];
+  const settings = await getSettings();
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MENU_PARENT,
-      title: 'Tabs to EPUB',
+      title: 'Tabs to EPUB & Kindle',
       contexts: menuContexts
     });
     chrome.contextMenus.create({
@@ -505,27 +463,11 @@ function registerContextMenus(): void {
       contexts: menuContexts
     });
     chrome.contextMenus.create({
-      id: MENU_SAVE_EMAIL,
+      id: MENU_EMAIL_KINDLE,
       parentId: MENU_PARENT,
-      title: 'Save tab(s) to EPUB and email to Kindle',
-      contexts: menuContexts
-    });
-    chrome.contextMenus.create({
-      id: MENU_ADD_QUEUE,
-      parentId: MENU_PARENT,
-      title: 'Add tab(s) to EPUB queue',
-      contexts: menuContexts
-    });
-    chrome.contextMenus.create({
-      id: MENU_SAVE_QUEUE,
-      parentId: MENU_PARENT,
-      title: 'Save queued tabs to EPUB',
-      contexts: menuContexts
-    });
-    chrome.contextMenus.create({
-      id: MENU_CLEAR_QUEUE,
-      parentId: MENU_PARENT,
-      title: 'Clear EPUB queue',
+      title: 'Email to Kindle',
+      type: 'checkbox',
+      checked: settings.emailToKindle,
       contexts: menuContexts
     });
   });
@@ -543,25 +485,19 @@ chrome.runtime.onStartup.addListener(() => {
 registerContextMenus();
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === MENU_EMAIL_KINDLE) {
+    const checked = Boolean(info.checked);
+    await setSettings({ emailToKindle: checked });
+    return;
+  }
+  const settings = await getSettings();
   const tabs = await getTargetTabs(tab);
   switch (info.menuItemId) {
     case MENU_SAVE:
-      await handleSaveTabs(tabs, { closeTabs: false });
+      await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: settings.emailToKindle });
       break;
     case MENU_SAVE_CLOSE:
-      await handleSaveTabs(tabs, { closeTabs: true });
-      break;
-    case MENU_SAVE_EMAIL:
-      await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: true });
-      break;
-    case MENU_ADD_QUEUE:
-      await handleAddToQueue(tabs);
-      break;
-    case MENU_SAVE_QUEUE:
-      await handleSaveQueue();
-      break;
-    case MENU_CLEAR_QUEUE:
-      await handleClearQueue();
+      await handleSaveTabs(tabs, { closeTabs: true, emailToKindle: settings.emailToKindle });
       break;
     default:
       break;
@@ -620,8 +556,7 @@ chrome.runtime.onMessage.addListener(
           return { ok: true };
         }
         case 'TEST_RESET_STATE': {
-          await setQueue([]);
-          await setSettings({ testMode: true, kindleEmail: null });
+          await setSettings({ testMode: true, kindleEmail: null, useDefaultDownloads: false, emailToKindle: false });
           return { ok: true };
         }
         case 'TEST_LIST_TABS': {
@@ -664,17 +599,6 @@ chrome.runtime.onMessage.addListener(
             return { ok: false, error: 'No articles extracted', failures: result.failures };
           }
           return serializeTestResult({ ...result, bytes: result.bytes, filename: result.filename });
-        }
-        case 'TEST_GET_QUEUE': {
-          await requireTestMode();
-          const queue = await getQueue();
-          const response: TestQueueResponse = { ok: true, queue };
-          return response;
-        }
-        case 'TEST_CLEAR_QUEUE': {
-          await requireTestMode();
-          await setQueue([]);
-          return { ok: true };
         }
         default:
           return { ok: false, error: 'Unknown test command' };
@@ -727,37 +651,17 @@ chrome.runtime.onMessage.addListener(
           });
           return { ok: true };
         }
-        case 'UI_ADD_QUEUE': {
-          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
-          if (requested.length === 0) {
-            return { ok: false, error: 'No tabs selected' };
-          }
-          const tabs = await tabsQuery({ currentWindow: true });
-          const tabMap = new Map<number, chrome.tabs.Tab>();
-          tabs.forEach((tab) => {
-            if (typeof tab.id === 'number') {
-              tabMap.set(tab.id, tab);
-            }
-          });
-          const selected = requested
-            .map((id) => tabMap.get(id))
-            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
-          if (selected.length === 0) {
-            return { ok: false, error: 'No tabs selected' };
-          }
-          await handleAddToQueue(selected);
-          return { ok: true };
-        }
-        case 'UI_SAVE_QUEUE': {
-          await handleSaveQueue();
-          return { ok: true };
-        }
-        case 'UI_CLEAR_QUEUE': {
-          await handleClearQueue();
-          return { ok: true };
-        }
         case 'UI_CLEAR_DIRECTORY': {
           await clearHandle();
+          await setSettings({ useDefaultDownloads: false });
+          return { ok: true };
+        }
+        case 'UI_SET_DEFAULT_DOWNLOADS': {
+          const enabled = Boolean(message.enabled);
+          if (enabled) {
+            await clearHandle();
+          }
+          await setSettings({ useDefaultDownloads: enabled });
           return { ok: true };
         }
         case 'UI_BUILD_EPUB': {
@@ -804,6 +708,12 @@ chrome.runtime.onMessage.addListener(
             filename: result.filename
           };
           return response;
+        }
+        case 'UI_SET_EMAIL_TO_KINDLE': {
+          const enabled = Boolean(message.enabled);
+          await setSettings({ emailToKindle: enabled });
+          chrome.contextMenus.update(MENU_EMAIL_KINDLE, { checked: enabled });
+          return { ok: true };
         }
         case 'UI_SET_KINDLE_EMAIL': {
           const kindleEmail = normalizeKindleEmail(message.email);

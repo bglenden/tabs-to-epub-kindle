@@ -52,7 +52,7 @@ export async function emailEpubToKindle(bytes: Uint8Array, filename: string, kin
     await sendGmailMessage(
       {
         to: kindleEmail,
-        subject: `Tabs to EPUB: ${filename}`,
+        subject: `Tabs to EPUB & Kindle: ${filename}`,
         bodyText: `Attached: ${filename}`,
         attachment: {
           filename,

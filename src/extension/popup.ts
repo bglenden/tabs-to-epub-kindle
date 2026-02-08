@@ -4,8 +4,10 @@ import type { Settings, UiBuildEpubResponse, UiMessage, UiResponse } from './typ
 const statusEl = document.getElementById('status');
 const kindleInputEl = document.getElementById('kindle-email') as HTMLInputElement;
 const kindleSaveBtn = document.getElementById('kindle-email-save') as HTMLButtonElement;
+const emailKindleCheckbox = document.getElementById('email-kindle') as HTMLInputElement;
 const dirStatusEl = document.getElementById('dir-status') as HTMLSpanElement;
 const dirPickBtn = document.getElementById('dir-pick') as HTMLButtonElement;
+const dirDownloadsBtn = document.getElementById('dir-downloads') as HTMLButtonElement;
 const dirClearBtn = document.getElementById('dir-clear') as HTMLButtonElement;
 
 function setStatus(message: string, isError = false): void {
@@ -18,6 +20,7 @@ function setBusy(isBusy: boolean): void {
   document.querySelectorAll('button').forEach((button) => {
     (button as HTMLButtonElement).disabled = isBusy;
   });
+  emailKindleCheckbox.disabled = isBusy;
 }
 
 function isSettingsResponse(response: UiResponse): response is UiResponse & { settings: Settings } {
@@ -68,26 +71,39 @@ async function getSettings(): Promise<Settings> {
 }
 
 async function updateDirectoryDisplay(): Promise<void> {
+  const settings = await getSettings().catch(() => null);
+  if (settings?.useDefaultDownloads) {
+    dirStatusEl.textContent = 'Using Downloads (Chrome default)';
+    dirPickBtn.textContent = 'Choose Folder';
+    dirDownloadsBtn.style.display = 'none';
+    dirClearBtn.style.display = '';
+    return;
+  }
+
   try {
     const state = await getDirectoryState();
     if (!state.handle) {
       dirStatusEl.textContent = 'No output folder chosen';
       dirPickBtn.textContent = 'Choose Folder';
+      dirDownloadsBtn.style.display = '';
       dirClearBtn.style.display = 'none';
       return;
     }
     if (state.permission === 'granted') {
       dirStatusEl.textContent = `Folder: ${state.name}`;
       dirPickBtn.textContent = 'Change';
+      dirDownloadsBtn.style.display = 'none';
       dirClearBtn.style.display = '';
     } else {
       dirStatusEl.textContent = `Folder: ${state.name} (re-authorize needed)`;
       dirPickBtn.textContent = 'Re-authorize';
+      dirDownloadsBtn.style.display = 'none';
       dirClearBtn.style.display = '';
     }
   } catch {
     dirStatusEl.textContent = 'No output folder chosen';
     dirPickBtn.textContent = 'Choose Folder';
+    dirDownloadsBtn.style.display = '';
     dirClearBtn.style.display = 'none';
   }
 }
@@ -96,6 +112,7 @@ async function pickDirectory(): Promise<void> {
   try {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
     await storeHandle(handle);
+    await sendMessage({ type: 'UI_SET_DEFAULT_DOWNLOADS', enabled: false });
     await updateDirectoryDisplay();
     setStatus('Output folder set.');
   } catch (err) {
@@ -103,11 +120,18 @@ async function pickDirectory(): Promise<void> {
       return; // User cancelled
     }
     if (err instanceof DOMException && err.name === 'SecurityError') {
-      setStatus('Chrome blocks Downloads/Desktop/Documents directly. Pick a subfolder instead.', true);
+      setStatus('Chrome blocks that folder directly. Try creating a sub-folder (e.g. Downloads/EPUB).', true);
       return;
     }
     setStatus(err instanceof Error ? err.message : 'Failed to pick folder', true);
   }
+}
+
+async function useDefaultDownloads(): Promise<void> {
+  await clearHandle();
+  await sendMessage({ type: 'UI_SET_DEFAULT_DOWNLOADS', enabled: true });
+  await updateDirectoryDisplay();
+  setStatus('Using Chrome Downloads folder.');
 }
 
 async function clearDirectory(): Promise<void> {
@@ -165,61 +189,32 @@ async function handleAction(action: string): Promise<void> {
   setStatus('Working…');
 
   try {
-    if (action === 'queue-save') {
-      const response = await sendMessage({ type: 'UI_SAVE_QUEUE' });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Queued tabs saved.');
-      return;
-    }
-    if (action === 'queue-clear') {
-      const response = await sendMessage({ type: 'UI_CLEAR_QUEUE' });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Queue cleared.');
-      return;
-    }
-
     const tabIds = await getSelectedTabIds();
     if (tabIds.length === 0) {
       setStatus('No tabs selected.', true);
       return;
     }
 
-    const isSaveAction = action === 'save' || action === 'save-close' || action === 'save-email';
-    if (isSaveAction) {
-      const options = {
-        closeTabs: action === 'save-close',
-        emailToKindle: action === 'save-email'
-      };
-      const wroteDirectly = await saveViaDirectoryHandle(tabIds, options);
-      if (wroteDirectly) {
-        setStatus('Saved to folder.');
-        return;
-      }
+    const emailToKindle = emailKindleCheckbox.checked;
+    const closeTabs = action === 'save-close';
+    const options = { closeTabs, emailToKindle };
+
+    // Try writing directly via directory handle
+    const wroteDirectly = await saveViaDirectoryHandle(tabIds, options);
+    if (wroteDirectly) {
+      setStatus('Saved to folder.');
+      return;
     }
 
-    if (action === 'save') {
-      const response = await sendMessage({ type: 'UI_SAVE_TAB_IDS', tabIds });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Save started.');
-      return;
-    }
-    if (action === 'save-email') {
-      const response = await sendMessage({ type: 'UI_SAVE_TAB_IDS', tabIds, emailToKindle: true });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Save + email started.');
-      return;
-    }
-    if (action === 'save-close') {
-      const response = await sendMessage({ type: 'UI_SAVE_TAB_IDS', tabIds, closeTabs: true });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Save started, closing tabs.');
-      return;
-    }
-    if (action === 'queue-add') {
-      const response = await sendMessage({ type: 'UI_ADD_QUEUE', tabIds });
-      if (!response.ok) throw new Error(response.error);
-      setStatus('Tabs added to queue.');
-    }
+    // Fall back to chrome.downloads (handles both "Use Downloads" and Save As)
+    const response = await sendMessage({
+      type: 'UI_SAVE_TAB_IDS',
+      tabIds,
+      closeTabs,
+      emailToKindle
+    });
+    if (!response.ok) throw new Error(response.error);
+    setStatus('Save started.');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Request failed';
     setStatus(message, true);
@@ -232,12 +227,17 @@ document.addEventListener('DOMContentLoaded', () => {
   void getSettings()
     .then((settings) => {
       kindleInputEl.value = settings.kindleEmail || '';
+      emailKindleCheckbox.checked = settings.emailToKindle;
       setStatus('Ready.');
     })
     .catch(() => setStatus('Ready.'));
   void updateDirectoryDisplay();
   dirPickBtn.addEventListener('click', () => void pickDirectory());
+  dirDownloadsBtn.addEventListener('click', () => void useDefaultDownloads());
   dirClearBtn.addEventListener('click', () => void clearDirectory());
+  emailKindleCheckbox.addEventListener('change', () => {
+    void sendMessage({ type: 'UI_SET_EMAIL_TO_KINDLE', enabled: emailKindleCheckbox.checked });
+  });
   kindleSaveBtn.addEventListener('click', () => void saveKindleEmail());
   kindleInputEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') void saveKindleEmail();

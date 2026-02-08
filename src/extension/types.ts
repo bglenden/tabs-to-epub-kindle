@@ -22,11 +22,8 @@ export interface EmbeddedResult {
 export interface Settings {
   testMode: boolean;
   kindleEmail: string | null;
-}
-
-export interface QueueEntry {
-  tabId: number;
-  title: string;
+  useDefaultDownloads: boolean;
+  emailToKindle: boolean;
 }
 
 export interface ExtractMessage {
@@ -50,18 +47,15 @@ export type TestMessage =
   | { type: 'TEST_RESET_STATE' }
   | { type: 'TEST_LIST_TABS' }
   | { type: 'TEST_SAVE_ACTIVE_TAB' }
-  | { type: 'TEST_SAVE_TAB_IDS'; tabIds: number[] }
-  | { type: 'TEST_GET_QUEUE' }
-  | { type: 'TEST_CLEAR_QUEUE' };
+  | { type: 'TEST_SAVE_TAB_IDS'; tabIds: number[] };
 
 export type UiMessage =
   | { type: 'UI_SAVE_TAB_IDS'; tabIds: number[]; closeTabs?: boolean; emailToKindle?: boolean }
-  | { type: 'UI_ADD_QUEUE'; tabIds: number[] }
-  | { type: 'UI_SAVE_QUEUE' }
-  | { type: 'UI_CLEAR_QUEUE' }
   | { type: 'UI_CLEAR_DIRECTORY' }
+  | { type: 'UI_SET_DEFAULT_DOWNLOADS'; enabled: boolean }
   | { type: 'UI_BUILD_EPUB'; tabIds: number[]; closeTabs?: boolean; emailToKindle?: boolean }
   | { type: 'UI_SET_KINDLE_EMAIL'; email: string | null }
+  | { type: 'UI_SET_EMAIL_TO_KINDLE'; enabled: boolean }
   | { type: 'UI_GET_SETTINGS' };
 
 export interface TestSuccessBase {
@@ -91,10 +85,6 @@ export interface TestListTabsResponse extends TestSuccessBase {
   }>;
 }
 
-export interface TestQueueResponse extends TestSuccessBase {
-  queue: QueueEntry[];
-}
-
 export interface UiSettingsResponse extends TestSuccessBase {
   settings: Settings;
 }
@@ -102,7 +92,6 @@ export interface UiSettingsResponse extends TestSuccessBase {
 export type TestResponse =
   | TestSaveResponse
   | TestListTabsResponse
-  | TestQueueResponse
   | TestSuccessBase
   | TestErrorResponse;
 

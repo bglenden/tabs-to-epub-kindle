@@ -1,4 +1,4 @@
-# Tabs to EPUB: Kindle Email Delivery Setup
+# Tabs to EPUB & Kindle: Kindle Email Delivery Setup
 
 ## Problem
 

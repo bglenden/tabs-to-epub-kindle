@@ -1,4 +1,4 @@
-# Tabs to EPUB
+# Tabs to EPUB & Kindle
 
 Chrome extension that saves one or more open tabs as a Kindle‑friendly EPUB (clean reading view, no interactive elements). Multiple tabs become chapters with a simple table of contents.
 
@@ -21,18 +21,13 @@ npm run build
 
 ## Usage
 
-Right‑click inside a page (or right‑click the extension toolbar icon) and choose **Tabs to EPUB**:
+Right‑click inside a page (or right‑click the extension toolbar icon) and choose **Tabs to EPUB & Kindle**:
 
 - **Save tab(s) to EPUB**: saves the highlighted tabs (or just the clicked tab).
 - **Save tab(s) to EPUB and email to Kindle**: sends the EPUB via Gmail API, then also downloads it locally.
 - **Save tab(s) to EPUB and close**: same, then closes the tabs.
-- **Add tab(s) to EPUB queue**: collect tabs for later.
-- **Save queued tabs to EPUB**: builds one EPUB from queued tabs.
-- **Clear EPUB queue**: clears the queue.
-- **Change output folder (prompt next save)**: resets output directory so the next save asks again.
-- **Set Kindle email address**: stores your Kindle import address for email delivery.
 
-You can also click the extension toolbar icon to open a popup with the same actions.
+The popup provides the same save actions plus an **Email to Kindle** checkbox. It also lets you configure the output folder and Kindle email address.
 
 ### Kindle email setup (Gmail)
 
@@ -46,7 +41,11 @@ Email delivery uses `chrome.identity` + Gmail API and requires your own OAuth cl
 
 ### Output folder behavior
 
-On the first save, Chrome shows a save dialog. The extension remembers that folder and tries to reuse it on subsequent saves. If Chrome rejects the path (e.g., outside the default downloads folder), it will prompt again and update the stored folder.
+The popup offers three output modes:
+
+- **Choose Folder**: pick a specific directory via the OS folder picker. EPUBs are written directly (no Save As dialog). Note: Chrome blocks selecting top-level system directories like Downloads or Desktop — pick or create a sub-folder instead (e.g. `Downloads/EPUB`).
+- **Use Downloads**: saves to Chrome's default download location silently (no dialog).
+- **Clear**: resets to no preference, so each save shows a Save As dialog.
 
 ### File naming
 

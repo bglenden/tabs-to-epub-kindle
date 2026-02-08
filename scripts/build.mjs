@@ -54,6 +54,14 @@ async function build() {
     path.join(repoRoot, 'src', 'extension', 'popup.html'),
     path.join(distDir, 'extension', 'popup.html')
   );
+
+  const iconsDir = path.join(repoRoot, 'src', 'extension', 'icons');
+  for (const file of await fs.readdir(iconsDir)) {
+    await copyFile(
+      path.join(iconsDir, file),
+      path.join(distDir, 'extension', 'icons', file)
+    );
+  }
 }
 
 build().catch((err) => {

@@ -141,12 +141,25 @@ export function buildMimeMessage(request: GmailSendRequest): string {
   ].join('\r\n');
 }
 
+// Gmail API request body limit: 35 MB
+const GMAIL_MAX_BODY_BYTES = 35 * 1024 * 1024;
+
 export async function sendGmailMessage(
   request: GmailSendRequest,
   tokenClient: GmailTokenClient,
   fetchFn: typeof fetch = fetch
 ): Promise<void> {
   const raw = encodeBase64Url(buildMimeMessage(request));
+
+  // The JSON body is {"raw":"<base64url>"} — all ASCII, so length === byte size.
+  if (raw.length + 10 > GMAIL_MAX_BODY_BYTES) {
+    const sizeMB = (request.attachment.bytes.length / (1024 * 1024)).toFixed(1);
+    throw new Error(
+      `Attachment is too large to send via Gmail (${sizeMB} MB). ` +
+        'The Gmail API limit is 35 MB, which allows roughly 20 MB attachments after encoding.'
+    );
+  }
+
   let token = await tokenClient.getToken(true);
 
   try {
