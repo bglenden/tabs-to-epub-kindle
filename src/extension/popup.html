@@ -48,8 +48,52 @@
         cursor: default;
         transform: none;
       }
-      .status {
+      .dir-row {
         margin-top: 10px;
+        font-size: 12px;
+        color: #444;
+      }
+      .dir-row #dir-status {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .dir-buttons {
+        display: flex;
+        gap: 6px;
+      }
+      .dir-buttons button {
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+      .kindle-row {
+        margin-top: 10px;
+      }
+      .kindle-row label {
+        font-size: 12px;
+        color: #444;
+        display: block;
+        margin-bottom: 4px;
+      }
+      .kindle-input-wrap {
+        display: flex;
+        gap: 6px;
+      }
+      .kindle-input-wrap input {
+        flex: 1;
+        min-width: 0;
+        padding: 7px 10px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 13px;
+      }
+      .kindle-input-wrap button {
+        flex-shrink: 0;
+        padding: 7px 12px;
+        font-size: 13px;
+      }
+      .status {
+        margin-top: 8px;
         font-size: 12px;
         color: #444;
         min-height: 16px;
@@ -60,13 +104,27 @@
     <h1>Tabs to EPUB</h1>
     <div class="actions">
       <button data-action="save">Save tab(s) to EPUB</button>
+      <button data-action="save-email">Save tab(s) to EPUB and email to Kindle</button>
       <button data-action="save-close">Save tab(s) to EPUB and close</button>
       <button class="secondary" data-action="queue-add">Add tab(s) to EPUB queue</button>
       <button class="secondary" data-action="queue-save">Save queued tabs to EPUB</button>
       <button class="ghost" data-action="queue-clear">Clear EPUB queue</button>
-      <button class="ghost" data-action="reset-output">Change output folder (prompt next save)</button>
+    </div>
+    <div class="dir-row">
+      <span id="dir-status">No output folder chosen</span>
+      <div class="dir-buttons">
+        <button id="dir-pick" class="ghost">Choose Folder</button>
+        <button id="dir-clear" class="ghost" style="display:none">Clear</button>
+      </div>
+    </div>
+    <div class="kindle-row">
+      <label for="kindle-email">Kindle email</label>
+      <div class="kindle-input-wrap">
+        <input id="kindle-email" type="email" autocomplete="off" placeholder="you@kindle.com" />
+        <button id="kindle-email-save" class="ghost">Save</button>
+      </div>
     </div>
     <div class="status" id="status"></div>
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

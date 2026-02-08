@@ -1,6 +1,8 @@
 import { buildEpub } from '../core/epub.js';
 import type { EpubAsset } from '../core/types.js';
 import { buildFilenameForArticles } from './filename.js';
+import { emailEpubToKindle, isKindleEmailValid, normalizeKindleEmail, requireKindleEmail } from './kindle-email.js';
+import { clearHandle, loadHandle, writeFile } from './directory-handle.js';
 import type {
   ExtractMessage,
   ExtractResponse,
@@ -13,6 +15,7 @@ import type {
   TestQueueResponse,
   TestResponse,
   TestSaveResponse,
+  UiBuildEpubResponse,
   UiMessage,
   UiResponse
 } from './types.js';
@@ -20,21 +23,19 @@ import type {
 const MENU_PARENT = 'tabstoepub-root';
 const MENU_SAVE = 'tabstoepub-save';
 const MENU_SAVE_CLOSE = 'tabstoepub-save-close';
+const MENU_SAVE_EMAIL = 'tabstoepub-save-email';
 const MENU_ADD_QUEUE = 'tabstoepub-add-queue';
 const MENU_SAVE_QUEUE = 'tabstoepub-save-queue';
 const MENU_CLEAR_QUEUE = 'tabstoepub-clear-queue';
-const MENU_RESET_OUTPUT = 'tabstoepub-reset-output';
-
 const SETTINGS_KEY = 'tabstoepub-settings';
 const QUEUE_KEY = 'tabstoepub-queue';
 
 const DEFAULT_SETTINGS: Settings = {
-  outputDir: null,
-  testMode: false
+  testMode: false,
+  kindleEmail: null
 };
 
 const pendingDownloads = new Map<number, string>();
-const pendingDirCapture = new Set<number>();
 
 const IMAGE_TYPE_TO_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -248,12 +249,6 @@ function downloadsDownload(options: chrome.downloads.DownloadOptions): Promise<n
   });
 }
 
-function downloadsSearch(query: chrome.downloads.DownloadQuery): Promise<chrome.downloads.DownloadItem[]> {
-  return new Promise((resolve) => {
-    chrome.downloads.search(query, (items) => resolve(items || []));
-  });
-}
-
 function base64FromBytes(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
@@ -329,37 +324,21 @@ async function extractArticles(
   return { articles, failures };
 }
 
-function buildOutputPath(outputDir: string | null, filename: string): string {
-  if (!outputDir) {
-    return filename;
-  }
-  const sanitized = outputDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  return `${sanitized}/${filename}`;
-}
-
-function dirname(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  return idx >= 0 ? normalized.slice(0, idx) : '';
-}
-
-function replaceFilenamePart(filePath: string, replace: (name: string) => string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  if (idx < 0) {
-    return replace(normalized);
-  }
-  const dir = normalized.slice(0, idx + 1);
-  const base = normalized.slice(idx + 1);
-  return `${dir}${replace(base)}`;
-}
-
-function stripFilenameColons(filePath: string): string {
-  return replaceFilenamePart(filePath, (name) => name.replace(/:/g, '-'));
-}
-
 async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number> {
-  const settings = await getSettings();
+  // Try writing directly via stored directory handle
+  try {
+    const handle = await loadHandle();
+    if (handle) {
+      const permission = await handle.queryPermission({ mode: 'readwrite' });
+      if (permission === 'granted') {
+        await writeFile(handle, filename, bytes);
+        return -1; // No download ID needed
+      }
+    }
+  } catch {
+    // Fall through to chrome.downloads
+  }
+
   let url = '';
   let shouldRevoke = false;
   if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
@@ -371,53 +350,20 @@ async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number
     const base64 = base64FromBytes(bytes);
     url = `data:application/epub+zip;base64,${base64}`;
   }
-  let downloadId: number;
-  const primaryPath = buildOutputPath(settings.outputDir, filename);
 
-  try {
-    downloadId = await downloadsDownload({
-      url,
-      filename: primaryPath,
-      saveAs: !settings.outputDir
-    });
-  } catch {
-    const strippedPath = stripFilenameColons(primaryPath);
-    if (strippedPath !== primaryPath) {
-      try {
-        downloadId = await downloadsDownload({
-          url,
-          filename: strippedPath,
-          saveAs: !settings.outputDir
-        });
-      } catch {
-        await setSettings({ outputDir: null });
-        const fallbackPath = stripFilenameColons(filename);
-        downloadId = await downloadsDownload({
-          url,
-          filename: fallbackPath,
-          saveAs: true
-        });
-      }
-    } else {
-      await setSettings({ outputDir: null });
-      downloadId = await downloadsDownload({
-        url,
-        filename,
-        saveAs: true
-      });
-    }
-  }
+  const downloadId = await downloadsDownload({
+    url,
+    filename,
+    saveAs: true
+  });
 
   if (shouldRevoke) {
     pendingDownloads.set(downloadId, url);
   }
-  if (!settings.outputDir) {
-    pendingDirCapture.add(downloadId);
-  }
   return downloadId;
 }
 
-chrome.downloads.onChanged.addListener(async (delta: chrome.downloads.DownloadDelta) => {
+chrome.downloads.onChanged.addListener((delta: chrome.downloads.DownloadDelta) => {
   if (!delta.state) {
     return;
   }
@@ -427,17 +373,6 @@ chrome.downloads.onChanged.addListener(async (delta: chrome.downloads.DownloadDe
       URL.revokeObjectURL(url);
       pendingDownloads.delete(delta.id);
     }
-  }
-  if (delta.state.current === 'complete' && pendingDirCapture.has(delta.id)) {
-    const items = await downloadsSearch({ id: delta.id });
-    const item = items[0];
-    if (item && item.filename) {
-      const dir = dirname(item.filename);
-      if (dir) {
-        await setSettings({ outputDir: dir });
-      }
-    }
-    pendingDirCapture.delete(delta.id);
   }
 });
 
@@ -481,14 +416,34 @@ async function buildEpubFromTabs(tabs: chrome.tabs.Tab[]): Promise<BuildTabsResu
 
 async function handleSaveTabs(
   tabs: chrome.tabs.Tab[],
-  { closeTabs = false }: { closeTabs?: boolean } = {}
+  { closeTabs = false, emailToKindle = false }: { closeTabs?: boolean; emailToKindle?: boolean } = {}
 ): Promise<void> {
   const result = await buildEpubFromTabs(tabs);
   if (!result.bytes) {
     console.warn('No articles extracted', result.failures);
     return;
   }
+
+  let emailError: Error | null = null;
+  if (emailToKindle) {
+    try {
+      const settings = await getSettings();
+      const kindleEmail = requireKindleEmail(settings.kindleEmail);
+      if (!settings.testMode) {
+        await emailEpubToKindle(result.bytes, result.filename, kindleEmail);
+      }
+    } catch (err) {
+      emailError = err instanceof Error ? err : new Error(String(err));
+      console.error('Email delivery failed:', emailError.message);
+    }
+  }
+
   await downloadEpub(result.bytes, result.filename);
+
+  if (emailError) {
+    throw new Error(`EPUB was downloaded, but email delivery failed: ${emailError.message}`);
+  }
+
   if (closeTabs) {
     const ids = tabs.map((tab) => tab.id).filter((id): id is number => typeof id === 'number');
     if (ids.length > 0) {
@@ -529,10 +484,6 @@ async function handleClearQueue(): Promise<void> {
   await setQueue([]);
 }
 
-async function handleResetOutput(): Promise<void> {
-  await setSettings({ outputDir: null });
-}
-
 function registerContextMenus(): void {
   const menuContexts: chrome.contextMenus.ContextType[] = ['page', 'action'];
   chrome.contextMenus.removeAll(() => {
@@ -554,6 +505,12 @@ function registerContextMenus(): void {
       contexts: menuContexts
     });
     chrome.contextMenus.create({
+      id: MENU_SAVE_EMAIL,
+      parentId: MENU_PARENT,
+      title: 'Save tab(s) to EPUB and email to Kindle',
+      contexts: menuContexts
+    });
+    chrome.contextMenus.create({
       id: MENU_ADD_QUEUE,
       parentId: MENU_PARENT,
       title: 'Add tab(s) to EPUB queue',
@@ -569,12 +526,6 @@ function registerContextMenus(): void {
       id: MENU_CLEAR_QUEUE,
       parentId: MENU_PARENT,
       title: 'Clear EPUB queue',
-      contexts: menuContexts
-    });
-    chrome.contextMenus.create({
-      id: MENU_RESET_OUTPUT,
-      parentId: MENU_PARENT,
-      title: 'Change output folder (prompt next save)',
       contexts: menuContexts
     });
   });
@@ -600,6 +551,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     case MENU_SAVE_CLOSE:
       await handleSaveTabs(tabs, { closeTabs: true });
       break;
+    case MENU_SAVE_EMAIL:
+      await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: true });
+      break;
     case MENU_ADD_QUEUE:
       await handleAddToQueue(tabs);
       break;
@@ -608,9 +562,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       break;
     case MENU_CLEAR_QUEUE:
       await handleClearQueue();
-      break;
-    case MENU_RESET_OUTPUT:
-      await handleResetOutput();
       break;
     default:
       break;
@@ -670,7 +621,7 @@ chrome.runtime.onMessage.addListener(
         }
         case 'TEST_RESET_STATE': {
           await setQueue([]);
-          await setSettings({ outputDir: null, testMode: true });
+          await setSettings({ testMode: true, kindleEmail: null });
           return { ok: true };
         }
         case 'TEST_LIST_TABS': {
@@ -770,7 +721,10 @@ chrome.runtime.onMessage.addListener(
           if (selected.length === 0) {
             return { ok: false, error: 'No tabs selected' };
           }
-          await handleSaveTabs(selected, { closeTabs: Boolean(message.closeTabs) });
+          await handleSaveTabs(selected, {
+            closeTabs: Boolean(message.closeTabs),
+            emailToKindle: Boolean(message.emailToKindle)
+          });
           return { ok: true };
         }
         case 'UI_ADD_QUEUE': {
@@ -802,9 +756,66 @@ chrome.runtime.onMessage.addListener(
           await handleClearQueue();
           return { ok: true };
         }
-        case 'UI_RESET_OUTPUT': {
-          await handleResetOutput();
+        case 'UI_CLEAR_DIRECTORY': {
+          await clearHandle();
           return { ok: true };
+        }
+        case 'UI_BUILD_EPUB': {
+          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
+          if (requested.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          const allTabs = await tabsQuery({ currentWindow: true });
+          const tabMap = new Map<number, chrome.tabs.Tab>();
+          allTabs.forEach((tab) => {
+            if (typeof tab.id === 'number') {
+              tabMap.set(tab.id, tab);
+            }
+          });
+          const selected = requested
+            .map((id) => tabMap.get(id))
+            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          if (selected.length === 0) {
+            return { ok: false, error: 'No tabs selected' };
+          }
+          const result = await buildEpubFromTabs(selected);
+          if (!result.bytes) {
+            return { ok: false, error: 'No articles extracted' };
+          }
+
+          if (message.emailToKindle) {
+            const settings = await getSettings();
+            const kindleEmail = requireKindleEmail(settings.kindleEmail);
+            if (!settings.testMode) {
+              await emailEpubToKindle(result.bytes, result.filename, kindleEmail);
+            }
+          }
+
+          if (message.closeTabs) {
+            const ids = selected.map((tab) => tab.id).filter((id): id is number => typeof id === 'number');
+            if (ids.length > 0) {
+              await tabsRemove(ids);
+            }
+          }
+
+          const response: UiBuildEpubResponse = {
+            ok: true,
+            epubBase64: base64FromBytes(result.bytes),
+            filename: result.filename
+          };
+          return response;
+        }
+        case 'UI_SET_KINDLE_EMAIL': {
+          const kindleEmail = normalizeKindleEmail(message.email);
+          if (kindleEmail && !isKindleEmailValid(kindleEmail)) {
+            return { ok: false, error: 'Invalid Kindle email address' };
+          }
+          await setSettings({ kindleEmail });
+          return { ok: true };
+        }
+        case 'UI_GET_SETTINGS': {
+          const settings = await getSettings();
+          return { ok: true, settings };
         }
         default:
           return { ok: false, error: 'Unknown command' };

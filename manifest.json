@@ -3,7 +3,12 @@
   "name": "Tabs to EPUB",
   "version": "0.1.0",
   "description": "Save one or more open tabs as a Kindle-friendly EPUB.",
-  "permissions": ["contextMenus", "scripting", "storage", "downloads", "tabs"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmoAwlttMtQzieqkaByBZrvVcqlceL/m0RolDLGrLxSZfqfUcqfJORCZ2KkDgGENnMRaMHaytYGt1sRboSmJAgDqWNOqcexBIQNgNWxVQS4vxRqDBZUSv0NrSsAinbVb2c3I3HdUvYlvDUOBPOS5n0JdpxduuYtkDE9pncbO5khhRXt4tRA4bGNq4UuZzHagHbZI4tQgXYrGzVIjCQTLpZ50A/pFC+jocAIZnXUSRekUt9iYTpJlo0cVm1O6GH9shRScTOaoY+/72BaS6VZnyoBBGoqJFEAI5UmGq6BCC553bFv5En+di5XCTloXxwhkhZlzn31f9HMreDYcedmGmswIDAQAB",
+  "permissions": ["contextMenus", "scripting", "storage", "downloads", "tabs", "identity"],
+  "oauth2": {
+    "client_id": "31183752331-dv8sgdo3hc9k8mchoo7ofaoebi7jhsu9.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/gmail.send"]
+  },
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "extension/background.js",

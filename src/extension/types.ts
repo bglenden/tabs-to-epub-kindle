@@ -20,8 +20,8 @@ export interface EmbeddedResult {
 }
 
 export interface Settings {
-  outputDir: string | null;
   testMode: boolean;
+  kindleEmail: string | null;
 }
 
 export interface QueueEntry {
@@ -55,11 +55,14 @@ export type TestMessage =
   | { type: 'TEST_CLEAR_QUEUE' };
 
 export type UiMessage =
-  | { type: 'UI_SAVE_TAB_IDS'; tabIds: number[]; closeTabs?: boolean }
+  | { type: 'UI_SAVE_TAB_IDS'; tabIds: number[]; closeTabs?: boolean; emailToKindle?: boolean }
   | { type: 'UI_ADD_QUEUE'; tabIds: number[] }
   | { type: 'UI_SAVE_QUEUE' }
   | { type: 'UI_CLEAR_QUEUE' }
-  | { type: 'UI_RESET_OUTPUT' };
+  | { type: 'UI_CLEAR_DIRECTORY' }
+  | { type: 'UI_BUILD_EPUB'; tabIds: number[]; closeTabs?: boolean; emailToKindle?: boolean }
+  | { type: 'UI_SET_KINDLE_EMAIL'; email: string | null }
+  | { type: 'UI_GET_SETTINGS' };
 
 export interface TestSuccessBase {
   ok: true;
@@ -92,6 +95,10 @@ export interface TestQueueResponse extends TestSuccessBase {
   queue: QueueEntry[];
 }
 
+export interface UiSettingsResponse extends TestSuccessBase {
+  settings: Settings;
+}
+
 export type TestResponse =
   | TestSaveResponse
   | TestListTabsResponse
@@ -99,4 +106,9 @@ export type TestResponse =
   | TestSuccessBase
   | TestErrorResponse;
 
-export type UiResponse = TestSuccessBase | TestErrorResponse;
+export interface UiBuildEpubResponse extends TestSuccessBase {
+  epubBase64: string;
+  filename: string;
+}
+
+export type UiResponse = TestSuccessBase | TestErrorResponse | UiSettingsResponse | UiBuildEpubResponse;
