@@ -16,7 +16,7 @@ Chrome extension that saves one or more open browser tabs as a clean, Kindle-fri
 1. Clone and build:
 
 ```sh
-git clone https://github.com/brianglendenning/tabs-to-epub-kindle.git
+git clone https://github.com/bglenden/tabs-to-epub-kindle.git
 cd tabs-to-epub-kindle
 npm install
 npm run vendorize
