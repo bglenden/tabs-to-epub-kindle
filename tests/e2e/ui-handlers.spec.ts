@@ -11,7 +11,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionPath = path.resolve(__dirname, '../../dist');
 const baseUrl = 'https://example.test';
 const PDF_BYTES = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n', 'utf8');
-const TOO_LARGE_PDF_BYTES = Buffer.concat([PDF_BYTES, Buffer.alloc(27 * 1024 * 1024, 0x20)]);
 
 interface ExtensionLaunchResult {
   context: BrowserContext;
@@ -452,50 +451,6 @@ test('UI_BUILD_EPUB skips invalid high-priority PDF candidates from wrapper page
     expect(result.files.length).toBe(1);
     expect(result.files[0].mimeType).toBe('application/pdf');
     expect(Buffer.from(result.files[0].base64, 'base64').subarray(0, 5).toString('utf8')).toBe('%PDF-');
-  } finally {
-    await context.close();
-  }
-});
-
-test('UI_SAVE_TAB_IDS flags oversized email attachments and prefixes filenames', async () => {
-  const { context, testPage } = await launchWithExtension();
-
-  try {
-    await context.route(`${baseUrl}/too-large-paper.pdf`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/pdf',
-        body: TOO_LARGE_PDF_BYTES
-      })
-    );
-
-    const page = await context.newPage();
-    await page.goto(`${baseUrl}/too-large-paper.pdf`, { waitUntil: 'load' });
-    await page.bringToFront();
-
-    interface TestListTabsResponse {
-      ok: boolean;
-      tabs: Array<{ id?: number; url?: string }>;
-    }
-    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
-    const tab = list.tabs.find((entry) => entry.url?.includes('too-large-paper.pdf'));
-    expect(tab?.id).toBeDefined();
-
-    await sendTestMessage(testPage, { type: 'TEST_SET_MODE', enabled: false });
-    await sendUiMessage(testPage, { type: 'UI_SET_KINDLE_EMAIL', email: 'kindle@example.com' });
-
-    const result = await sendUiMessage<UiResponse>(testPage, {
-      type: 'UI_SAVE_TAB_IDS',
-      tabIds: [tab!.id!],
-      emailToKindle: true
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.warning).toMatch(/too large/i);
-    expect(result.tooLargeForEmail).toBeDefined();
-    expect(result.tooLargeForEmail?.length).toBe(1);
-    expect(result.tooLargeForEmail?.[0]).toMatch(/^TOO LARGE FOR EMAIL /);
   } finally {
     await context.close();
   }

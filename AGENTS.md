@@ -110,7 +110,7 @@ Heuristics are intentionally conservative:
 
 ## Testing
 
-- **Unit tests** (`npm test`): `tests/*.test.ts` — EPUB structure, ZIP format, multi-attachment email MIME building, directory handle IndexedDB, PDF detection/naming, Kindle attachment batching.
+- **Unit tests** (`npm test`): `tests/*.test.ts` — EPUB structure, ZIP format, multi-attachment email MIME building, directory handle IndexedDB, PDF detection/naming, Kindle attachment batching, and oversized-email artifact prefixing/handling.
 - **Coverage** (`npm run test:coverage`): c8 with 80% threshold.
 - **E2E** (`npm run test:e2e`): Playwright with Chromium. Two spec files:
   - `tabstoepub.spec.ts` — extraction, image embedding, TOC, boilerplate stripping.

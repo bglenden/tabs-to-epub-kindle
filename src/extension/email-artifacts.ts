@@ -11,6 +11,11 @@ export interface EmailArtifact {
   bytes: Uint8Array;
 }
 
+export type SendKindleAttachmentsFn = (
+  attachments: Array<{ filename: string; mimeType: string; bytes: Uint8Array }>,
+  kindleEmail: string
+) => Promise<void>;
+
 function isTooLargeEmailError(message: string): boolean {
   return /too large to send via gmail/i.test(message);
 }
@@ -25,14 +30,15 @@ function toKindleAttachment(artifact: EmailArtifact): { filename: string; mimeTy
 
 export async function emailArtifactsToKindleCollectTooLarge(
   artifacts: EmailArtifact[],
-  kindleEmail: string
+  kindleEmail: string,
+  sendKindleAttachments: SendKindleAttachmentsFn = emailAttachmentsToKindle
 ): Promise<string[]> {
   const sendBatch = async (
     batch: Array<{ filename: string; mimeType: string; bytes: Uint8Array }>,
     tooLarge: Set<string>
   ): Promise<void> => {
     try {
-      await emailAttachmentsToKindle(batch, kindleEmail);
+      await sendKindleAttachments(batch, kindleEmail);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isTooLargeEmailError(message)) {
