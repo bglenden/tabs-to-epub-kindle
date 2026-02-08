@@ -15,6 +15,11 @@ function executeTabFunction<T>(tabId: number, func: () => T): Promise<T> {
   });
 }
 
+export interface PdfDomCandidate {
+  url: string;
+  score: number;
+}
+
 function canInspectTabDom(tab: chrome.tabs.Tab): boolean {
   const url = String(tab.url || '').toLowerCase();
   if (!url) {
@@ -23,13 +28,13 @@ function canInspectTabDom(tab: chrome.tabs.Tab): boolean {
   return !url.startsWith('chrome:') && !url.startsWith('chrome-extension:');
 }
 
-export async function discoverPdfSourcesFromTabDom(tab: chrome.tabs.Tab): Promise<string[]> {
+export async function discoverPdfSourcesFromTabDom(tab: chrome.tabs.Tab): Promise<PdfDomCandidate[]> {
   if (typeof tab.id !== 'number' || !canInspectTabDom(tab)) {
     return [];
   }
 
   try {
-    const candidates = await executeTabFunction<string[]>(tab.id, () => {
+    const candidates = await executeTabFunction<Array<{ url: string; score: number }>>(tab.id, () => {
       const scored = new Map<string, number>();
 
       const toAbsoluteUrl = (value: string): string | null => {
@@ -104,8 +109,9 @@ export async function discoverPdfSourcesFromTabDom(tab: chrome.tabs.Tab): Promis
       addElementUrl('embed[src]', 'src', 95);
       addElementUrl('object[data]', 'data', 95);
       addElementUrl('source[src]', 'src', 90);
-      addElementUrl('a[href]', 'href', 78, true);
-      addElementUrl('link[href]', 'href', 76, true);
+      // Keep ordinary link-based PDF hints lower-confidence than wrapper signals.
+      addElementUrl('a[href]', 'href', 62, true);
+      addElementUrl('link[href]', 'href', 60, true);
 
       document.querySelectorAll('meta[content]').forEach((meta) => {
         const content = meta.getAttribute('content');
@@ -170,10 +176,20 @@ export async function discoverPdfSourcesFromTabDom(tab: chrome.tabs.Tab): Promis
 
       return Array.from(scored.entries())
         .sort((a, b) => b[1] - a[1])
-        .map(([url]) => url)
+        .map(([url, score]) => ({ url, score }))
         .slice(0, 12);
     });
-    return Array.isArray(candidates) ? candidates : [];
+    if (!Array.isArray(candidates)) {
+      return [];
+    }
+    return candidates.filter(
+      (candidate): candidate is PdfDomCandidate =>
+        Boolean(candidate) &&
+        typeof candidate.url === 'string' &&
+        candidate.url.length > 0 &&
+        typeof candidate.score === 'number' &&
+        Number.isFinite(candidate.score)
+    );
   } catch {
     return [];
   }

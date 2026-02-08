@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const distDir = path.join(repoRoot, 'dist');
+const iconsDir = path.join(repoRoot, 'src', 'extension', 'icons');
 
 const staticFiles = [
   {
@@ -33,7 +34,12 @@ const staticFiles = [
     src: path.join(repoRoot, 'src', 'extension', 'popup.html'),
     dest: path.join(distDir, 'extension', 'popup.html'),
     optional: false
-  }
+  },
+  ...['icon-16.png', 'icon-48.png', 'icon-128.png'].map((name) => ({
+    src: path.join(iconsDir, name),
+    dest: path.join(distDir, 'extension', 'icons', name),
+    optional: false
+  }))
 ];
 
 async function copyFile({ src, dest, optional }) {

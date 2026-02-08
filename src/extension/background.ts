@@ -10,6 +10,9 @@ import { clearHandle, loadHandle, writeFile } from './directory-handle.js';
 import { applyTooLargeEmailPrefix, emailArtifactsToKindleCollectTooLarge } from './email-artifacts.js';
 import { discoverPdfSourcesFromTabDom } from './pdf-dom-discovery.js';
 import { buildPdfFilename, detectPdfTab, ensureUniqueFilename } from './pdf.js';
+import { mapWithConcurrency } from './async-limit.js';
+import { parseContentType } from './http.js';
+import { selectTabsByIds as selectTabsByIdsFromList } from './tab-selection.js';
 import type {
   ExtractMessage,
   ExtractResponse,
@@ -40,6 +43,11 @@ const pendingDownloads = new Map<number, string>();
 
 const EPUB_MIME_TYPE = 'application/epub+zip';
 const PDF_MIME_TYPE = 'application/pdf';
+const TAB_EXTRACTION_CONCURRENCY = 4;
+const PDF_CLASSIFICATION_CONCURRENCY = 3;
+const PDF_CANDIDATE_VERIFY_CONCURRENCY = 3;
+const PDF_FETCH_CONCURRENCY = 3;
+const PDF_DOM_WRAPPER_MIN_SCORE = 88;
 
 interface OutputArtifact {
   filename: string;
@@ -50,10 +58,6 @@ interface OutputArtifact {
 interface PdfTabCandidate {
   tab: chrome.tabs.Tab;
   sourceUrl: string;
-}
-
-function parseContentType(value: string | null): string {
-  return value ? String(value).split(';')[0].trim().toLowerCase() : '';
 }
 
 function storageGet<T>(key: string): Promise<T | undefined> {
@@ -172,9 +176,18 @@ function getTargetTabs(clickedTab?: chrome.tabs.Tab): Promise<chrome.tabs.Tab[]>
   });
 }
 
+async function selectTabsByIds(tabIds: number[]): Promise<chrome.tabs.Tab[]> {
+  const requested = Array.isArray(tabIds) ? tabIds : [];
+  if (requested.length === 0) {
+    return [];
+  }
+  return selectTabsByIdsFromList(await tabsQuery({ currentWindow: true }), requested);
+}
+
 async function ensureContentScript(tabId: number): Promise<void> {
   await executeScript(tabId, [
     'extension/vendor/readability.js',
+    'extension/extract-heuristics.js',
     'extension/extractor-readability.js',
     'extension/content-extract.js'
   ]);
@@ -203,16 +216,24 @@ async function extractFromTab(tab: chrome.tabs.Tab): Promise<ExtractedArticleWit
 async function extractArticles(
   tabs: chrome.tabs.Tab[]
 ): Promise<{ articles: ExtractedArticleWithTab[]; failures: Array<{ tab: chrome.tabs.Tab; error: string }> }> {
-  const articles: ExtractedArticleWithTab[] = [];
-  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
-
-  for (const tab of tabs) {
+  const results = await mapWithConcurrency(tabs, TAB_EXTRACTION_CONCURRENCY, async (tab) => {
     try {
-      const article = await extractFromTab(tab);
-      articles.push(article);
+      return { tab, article: await extractFromTab(tab), error: null as string | null };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      failures.push({ tab, error: errorMessage });
+      return { tab, article: null as ExtractedArticleWithTab | null, error: errorMessage };
+    }
+  });
+
+  const articles: ExtractedArticleWithTab[] = [];
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+  for (const result of results) {
+    if (result.article) {
+      articles.push(result.article);
+      continue;
+    }
+    if (result.error) {
+      failures.push({ tab: result.tab, error: result.error });
     }
   }
 
@@ -244,11 +265,28 @@ async function splitTabsByPdf(tabs: chrome.tabs.Tab[]): Promise<{
   pdfTabs: PdfTabCandidate[];
   failures: Array<{ tab: chrome.tabs.Tab; error: string }>;
 }> {
-  const articleTabs: chrome.tabs.Tab[] = [];
-  const pdfTabs: PdfTabCandidate[] = [];
-  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+  const resolvePdfSourceFromDomCandidates = async (tab: chrome.tabs.Tab): Promise<string | null> => {
+    const domCandidates = await discoverPdfSourcesFromTabDom(tab);
+    const limited = domCandidates
+      .filter((candidate) => candidate.score >= PDF_DOM_WRAPPER_MIN_SCORE)
+      .map((candidate) => candidate.url)
+      .slice(0, 6);
+    if (limited.length === 0) {
+      return null;
+    }
 
-  for (const tab of tabs) {
+    const checked = await mapWithConcurrency(limited, PDF_CANDIDATE_VERIFY_CONCURRENCY, async (candidateUrl) => {
+      const candidateDetection = await detectPdfTab(
+        { url: candidateUrl },
+        fetch,
+        { verifyUrlPath: true }
+      );
+      return candidateDetection.isPdf && candidateDetection.sourceUrl ? candidateDetection.sourceUrl : null;
+    });
+    return checked.find((sourceUrl): sourceUrl is string => Boolean(sourceUrl)) ?? null;
+  };
+
+  const classifications = await mapWithConcurrency(tabs, PDF_CLASSIFICATION_CONCURRENCY, async (tab) => {
     try {
       const detection = await detectPdfTab({
         url: tab.url,
@@ -257,36 +295,35 @@ async function splitTabsByPdf(tabs: chrome.tabs.Tab[]): Promise<{
       });
       if (detection.isPdf) {
         if (!detection.sourceUrl) {
-          failures.push({ tab, error: 'PDF tab has no downloadable source URL' });
-          continue;
+          return { kind: 'failure' as const, tab, error: 'PDF tab has no downloadable source URL' };
         }
-        pdfTabs.push({ tab, sourceUrl: detection.sourceUrl });
-        continue;
+        return { kind: 'pdf' as const, tab, sourceUrl: detection.sourceUrl };
       }
 
-      const domCandidates = await discoverPdfSourcesFromTabDom(tab);
-      let resolvedPdfSource: string | null = null;
-      for (const candidateUrl of domCandidates.slice(0, 6)) {
-        const candidateDetection = await detectPdfTab(
-          { url: candidateUrl },
-          fetch,
-          { verifyUrlPath: true }
-        );
-        if (candidateDetection.isPdf && candidateDetection.sourceUrl) {
-          resolvedPdfSource = candidateDetection.sourceUrl;
-          break;
-        }
-      }
+      const resolvedPdfSource = await resolvePdfSourceFromDomCandidates(tab);
       if (resolvedPdfSource) {
-        pdfTabs.push({ tab, sourceUrl: resolvedPdfSource });
-        continue;
+        return { kind: 'pdf' as const, tab, sourceUrl: resolvedPdfSource };
       }
-
-      articleTabs.push(tab);
+      return { kind: 'article' as const, tab };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      failures.push({ tab, error: errorMessage });
+      return { kind: 'failure' as const, tab, error: errorMessage };
     }
+  });
+
+  const articleTabs: chrome.tabs.Tab[] = [];
+  const pdfTabs: PdfTabCandidate[] = [];
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+  for (const result of classifications) {
+    if (result.kind === 'pdf') {
+      pdfTabs.push({ tab: result.tab, sourceUrl: result.sourceUrl });
+      continue;
+    }
+    if (result.kind === 'article') {
+      articleTabs.push(result.tab);
+      continue;
+    }
+    failures.push({ tab: result.tab, error: result.error });
   }
 
   return { articleTabs, pdfTabs, failures };
@@ -300,31 +337,40 @@ async function buildPdfArtifacts(
   artifacts: OutputArtifact[];
   failures: Array<{ tab: chrome.tabs.Tab; error: string }>;
 }> {
-  const artifacts: OutputArtifact[] = [];
-  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
-
-  for (const candidate of pdfTabs) {
+  const fetched = await mapWithConcurrency(pdfTabs, PDF_FETCH_CONCURRENCY, async (candidate) => {
     try {
       const bytes = await fetchPdfBytes(candidate.sourceUrl);
-      const baseFilename = buildPdfFilename(
-        {
-          title: candidate.tab.title,
-          url: candidate.tab.url,
-          pendingUrl: candidate.tab.pendingUrl
-        },
-        candidate.sourceUrl,
-        now
-      );
-      const filename = ensureUniqueFilename(baseFilename, usedFilenames);
-      artifacts.push({
-        filename,
-        mimeType: PDF_MIME_TYPE,
-        bytes
-      });
+      return { candidate, bytes, error: null as string | null };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      failures.push({ tab: candidate.tab, error: errorMessage });
+      return { candidate, bytes: null as Uint8Array | null, error: errorMessage };
     }
+  });
+
+  const artifacts: OutputArtifact[] = [];
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+  for (const result of fetched) {
+    if (!result.bytes) {
+      if (result.error) {
+        failures.push({ tab: result.candidate.tab, error: result.error });
+      }
+      continue;
+    }
+    const baseFilename = buildPdfFilename(
+      {
+        title: result.candidate.tab.title,
+        url: result.candidate.tab.url,
+        pendingUrl: result.candidate.tab.pendingUrl
+      },
+      result.candidate.sourceUrl,
+      now
+    );
+    const filename = ensureUniqueFilename(baseFilename, usedFilenames);
+    artifacts.push({
+      filename,
+      mimeType: PDF_MIME_TYPE,
+      bytes: result.bytes
+    });
   }
 
   return { artifacts, failures };
@@ -575,44 +621,58 @@ chrome.runtime.onStartup.addListener(() => {
 // Ensure menus exist if the service worker wakes outside install/startup events.
 registerContextMenus();
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === MENU_EMAIL_KINDLE) {
-    const checked = Boolean(info.checked);
-    await setSettings({ emailToKindle: checked });
-    return;
-  }
-  const settings = await getSettings();
-  const tabs = await getTargetTabs(tab);
-  switch (info.menuItemId) {
-    case MENU_SAVE:
-      {
-        const saveResult = await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: settings.emailToKindle });
-        if (saveResult.warning) {
-          console.warn(saveResult.warning);
-        }
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  void (async () => {
+    try {
+      if (info.menuItemId === MENU_EMAIL_KINDLE) {
+        const checked = Boolean(info.checked);
+        await setSettings({ emailToKindle: checked });
+        return;
       }
-      break;
-    case MENU_SAVE_CLOSE:
-      {
-        const saveResult = await handleSaveTabs(tabs, { closeTabs: true, emailToKindle: settings.emailToKindle });
-        if (saveResult.warning) {
-          console.warn(saveResult.warning);
-        }
+      const settings = await getSettings();
+      const tabs = await getTargetTabs(tab);
+      switch (info.menuItemId) {
+        case MENU_SAVE:
+          {
+            const saveResult = await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: settings.emailToKindle });
+            if (saveResult.warning) {
+              console.warn(saveResult.warning);
+            }
+          }
+          break;
+        case MENU_SAVE_CLOSE:
+          {
+            const saveResult = await handleSaveTabs(tabs, { closeTabs: true, emailToKindle: settings.emailToKindle });
+            if (saveResult.warning) {
+              console.warn(saveResult.warning);
+            }
+          }
+          break;
+        default:
+          break;
       }
-      break;
-    default:
-      break;
-  }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Context menu action failed:', message);
+    }
+  })();
 });
 
-chrome.action.onClicked.addListener(async () => {
-  const tabs = await tabsQuery({ active: true, currentWindow: true });
-  if (tabs.length > 0) {
-    const saveResult = await handleSaveTabs(tabs, { closeTabs: false });
-    if (saveResult.warning) {
-      console.warn(saveResult.warning);
+chrome.action.onClicked.addListener(() => {
+  void (async () => {
+    try {
+      const tabs = await tabsQuery({ active: true, currentWindow: true });
+      if (tabs.length > 0) {
+        const saveResult = await handleSaveTabs(tabs, { closeTabs: false });
+        if (saveResult.warning) {
+          console.warn(saveResult.warning);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Toolbar action failed:', message);
     }
-  }
+  })();
 });
 
 async function requireTestMode(): Promise<void> {
@@ -687,17 +747,7 @@ chrome.runtime.onMessage.addListener(
         }
         case 'TEST_SAVE_TAB_IDS': {
           await requireTestMode();
-          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
-          const tabs = await tabsQuery({ currentWindow: true });
-          const tabMap = new Map<number, chrome.tabs.Tab>();
-          tabs.forEach((tab) => {
-            if (typeof tab.id === 'number') {
-              tabMap.set(tab.id, tab);
-            }
-          });
-          const selected = requested
-            .map((id) => tabMap.get(id))
-            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          const selected = await selectTabsByIds(Array.isArray(message.tabIds) ? message.tabIds : []);
           const result = await buildEpubFromTabs(selected);
           if (!result.bytes || !result.filename) {
             return { ok: false, error: 'No articles extracted', failures: result.failures };
@@ -732,20 +782,7 @@ chrome.runtime.onMessage.addListener(
     (async (): Promise<UiResponse> => {
       switch (message.type) {
         case 'UI_SAVE_TAB_IDS': {
-          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
-          if (requested.length === 0) {
-            return { ok: false, error: 'No tabs selected' };
-          }
-          const tabs = await tabsQuery({ currentWindow: true });
-          const tabMap = new Map<number, chrome.tabs.Tab>();
-          tabs.forEach((tab) => {
-            if (typeof tab.id === 'number') {
-              tabMap.set(tab.id, tab);
-            }
-          });
-          const selected = requested
-            .map((id) => tabMap.get(id))
-            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          const selected = await selectTabsByIds(Array.isArray(message.tabIds) ? message.tabIds : []);
           if (selected.length === 0) {
             return { ok: false, error: 'No tabs selected' };
           }
@@ -771,20 +808,7 @@ chrome.runtime.onMessage.addListener(
           return { ok: true };
         }
         case 'UI_BUILD_EPUB': {
-          const requested = Array.isArray(message.tabIds) ? message.tabIds : [];
-          if (requested.length === 0) {
-            return { ok: false, error: 'No tabs selected' };
-          }
-          const allTabs = await tabsQuery({ currentWindow: true });
-          const tabMap = new Map<number, chrome.tabs.Tab>();
-          allTabs.forEach((tab) => {
-            if (typeof tab.id === 'number') {
-              tabMap.set(tab.id, tab);
-            }
-          });
-          const selected = requested
-            .map((id) => tabMap.get(id))
-            .filter((tab): tab is chrome.tabs.Tab => Boolean(tab));
+          const selected = await selectTabsByIds(Array.isArray(message.tabIds) ? message.tabIds : []);
           if (selected.length === 0) {
             return { ok: false, error: 'No tabs selected' };
           }
@@ -807,16 +831,16 @@ chrome.runtime.onMessage.addListener(
             mimeType: artifact.mimeType,
             base64: base64FromBytes(artifact.bytes)
           }));
-          const epubArtifact = result.artifacts.find((artifact) => artifact.mimeType === EPUB_MIME_TYPE);
+          const epubFile = files.find((file) => file.mimeType === EPUB_MIME_TYPE);
           const response: UiBuildEpubResponse = {
             ok: true,
             files,
             ...(emailResult.warning ? { warning: emailResult.warning } : {}),
             ...(emailResult.tooLargeForEmail.length > 0 ? { tooLargeForEmail: emailResult.tooLargeForEmail } : {}),
-            ...(epubArtifact
+            ...(epubFile
               ? {
-                  epubBase64: base64FromBytes(epubArtifact.bytes),
-                  filename: epubArtifact.filename
+                  epubBase64: epubFile.base64,
+                  filename: epubFile.filename
                 }
               : {})
           };
