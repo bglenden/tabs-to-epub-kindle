@@ -60,6 +60,8 @@ export type UiMessage =
 
 export interface TestSuccessBase {
   ok: true;
+  warning?: string;
+  tooLargeForEmail?: string[];
 }
 
 export interface TestErrorResponse {
@@ -96,8 +98,13 @@ export type TestResponse =
   | TestErrorResponse;
 
 export interface UiBuildEpubResponse extends TestSuccessBase {
-  epubBase64: string;
-  filename: string;
+  files: Array<{
+    filename: string;
+    mimeType: string;
+    base64: string;
+  }>;
+  epubBase64?: string;
+  filename?: string;
 }
 
 export type UiResponse = TestSuccessBase | TestErrorResponse | UiSettingsResponse | UiBuildEpubResponse;

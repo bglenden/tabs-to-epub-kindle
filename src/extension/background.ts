@@ -1,14 +1,19 @@
 import { buildEpub } from '../core/epub.js';
-import type { EpubAsset } from '../core/types.js';
 import { buildFilenameForArticles } from './filename.js';
-import { emailEpubToKindle, isKindleEmailValid, normalizeKindleEmail, requireKindleEmail } from './kindle-email.js';
+import { embedImages } from './image-assets.js';
+import {
+  isKindleEmailValid,
+  normalizeKindleEmail,
+  requireKindleEmail
+} from './kindle-email.js';
 import { clearHandle, loadHandle, writeFile } from './directory-handle.js';
+import { applyTooLargeEmailPrefix, emailArtifactsToKindleCollectTooLarge } from './email-artifacts.js';
+import { discoverPdfSourcesFromTabDom } from './pdf-dom-discovery.js';
+import { buildPdfFilename, detectPdfTab, ensureUniqueFilename } from './pdf.js';
 import type {
   ExtractMessage,
   ExtractResponse,
   ExtractedArticleWithTab,
-  EmbeddedResult,
-  ImageToken,
   Settings,
   TestMessage,
   TestResponse,
@@ -33,119 +38,22 @@ const DEFAULT_SETTINGS: Settings = {
 
 const pendingDownloads = new Map<number, string>();
 
-const IMAGE_TYPE_TO_EXT: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/svg+xml': 'svg',
-  'image/avif': 'avif',
-  'image/bmp': 'bmp',
-  'image/x-icon': 'ico',
-  'image/vnd.microsoft.icon': 'ico'
-};
+const EPUB_MIME_TYPE = 'application/epub+zip';
+const PDF_MIME_TYPE = 'application/pdf';
 
-const IMAGE_EXT_TO_TYPE: Record<string, string> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  avif: 'image/avif',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon'
-};
+interface OutputArtifact {
+  filename: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+interface PdfTabCandidate {
+  tab: chrome.tabs.Tab;
+  sourceUrl: string;
+}
 
 function parseContentType(value: string | null): string {
-  if (!value) return '';
-  return String(value).split(';')[0].trim().toLowerCase();
-}
-
-function extensionFromUrl(url: string): string {
-  try {
-    const { pathname } = new URL(url);
-    const match = pathname.match(/\.([a-z0-9]+)$/i);
-    if (match) {
-      return match[1].toLowerCase();
-    }
-  } catch {
-    // ignore
-  }
-  return '';
-}
-
-async function fetchImageBytes(
-  url: string
-): Promise<{ buffer: Uint8Array; contentType: string }> {
-  const response = await fetch(url, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Image fetch failed (${response.status})`);
-  }
-  const contentType = parseContentType(response.headers.get('content-type'));
-  const buffer = new Uint8Array(await response.arrayBuffer());
-  return { buffer, contentType };
-}
-
-async function embedImages(articles: ExtractedArticleWithTab[]): Promise<EmbeddedResult> {
-  const assets: EpubAsset[] = [];
-  let imageIndex = 0;
-  const updatedArticles: ExtractedArticleWithTab[] = [];
-
-  for (const article of articles) {
-    const images: ImageToken[] = Array.isArray(article.images) ? article.images : [];
-    let content = article.content ?? '';
-
-    for (const image of images) {
-      const token = image.token;
-      const sourceUrl = image.src;
-      let replacement = sourceUrl;
-
-      if (sourceUrl && /^https?:/i.test(sourceUrl)) {
-        try {
-          const { buffer, contentType } = await fetchImageBytes(sourceUrl);
-          let ext = IMAGE_TYPE_TO_EXT[contentType] || extensionFromUrl(sourceUrl);
-          let mediaType = contentType || IMAGE_EXT_TO_TYPE[ext];
-
-          if (ext && !mediaType) {
-            mediaType = IMAGE_EXT_TO_TYPE[ext];
-          }
-          if (!ext && mediaType) {
-            ext = IMAGE_TYPE_TO_EXT[mediaType];
-          }
-
-          if (ext && mediaType) {
-            imageIndex += 1;
-            const href = `images/image-${imageIndex}.${ext}`;
-            assets.push({
-              path: `OEBPS/${href}`,
-              href,
-              mediaType,
-              data: buffer
-            });
-            replacement = href;
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn('Image fetch failed:', sourceUrl, message);
-        }
-      }
-
-      if (token && content.includes(token)) {
-        content = content.replaceAll(token, replacement);
-      }
-    }
-
-    const { images: _images, ...rest } = article;
-    void _images;
-    updatedArticles.push({
-      ...rest,
-      content
-    });
-  }
-
-  return { articles: updatedArticles, assets };
+  return value ? String(value).split(';')[0].trim().toLowerCase() : '';
 }
 
 function storageGet<T>(key: string): Promise<T | undefined> {
@@ -311,14 +219,125 @@ async function extractArticles(
   return { articles, failures };
 }
 
-async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number> {
+function hasPdfMagicBytes(bytes: Uint8Array): boolean {
+  return bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
+}
+
+async function fetchPdfBytes(url: string): Promise<Uint8Array> {
+  const response = await fetch(url, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`PDF fetch failed (${response.status})`);
+  }
+  const contentType = parseContentType(response.headers.get('content-type'));
+  const buffer = new Uint8Array(await response.arrayBuffer());
+  if (contentType && contentType !== PDF_MIME_TYPE && !hasPdfMagicBytes(buffer)) {
+    throw new Error(`Resource is not a PDF (${contentType})`);
+  }
+  if (!contentType && !hasPdfMagicBytes(buffer)) {
+    throw new Error('Resource is not a PDF');
+  }
+  return buffer;
+}
+
+async function splitTabsByPdf(tabs: chrome.tabs.Tab[]): Promise<{
+  articleTabs: chrome.tabs.Tab[];
+  pdfTabs: PdfTabCandidate[];
+  failures: Array<{ tab: chrome.tabs.Tab; error: string }>;
+}> {
+  const articleTabs: chrome.tabs.Tab[] = [];
+  const pdfTabs: PdfTabCandidate[] = [];
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+
+  for (const tab of tabs) {
+    try {
+      const detection = await detectPdfTab({
+        url: tab.url,
+        pendingUrl: tab.pendingUrl,
+        title: tab.title
+      });
+      if (detection.isPdf) {
+        if (!detection.sourceUrl) {
+          failures.push({ tab, error: 'PDF tab has no downloadable source URL' });
+          continue;
+        }
+        pdfTabs.push({ tab, sourceUrl: detection.sourceUrl });
+        continue;
+      }
+
+      const domCandidates = await discoverPdfSourcesFromTabDom(tab);
+      let resolvedPdfSource: string | null = null;
+      for (const candidateUrl of domCandidates.slice(0, 6)) {
+        const candidateDetection = await detectPdfTab(
+          { url: candidateUrl },
+          fetch,
+          { verifyUrlPath: true }
+        );
+        if (candidateDetection.isPdf && candidateDetection.sourceUrl) {
+          resolvedPdfSource = candidateDetection.sourceUrl;
+          break;
+        }
+      }
+      if (resolvedPdfSource) {
+        pdfTabs.push({ tab, sourceUrl: resolvedPdfSource });
+        continue;
+      }
+
+      articleTabs.push(tab);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      failures.push({ tab, error: errorMessage });
+    }
+  }
+
+  return { articleTabs, pdfTabs, failures };
+}
+
+async function buildPdfArtifacts(
+  pdfTabs: PdfTabCandidate[],
+  now: Date,
+  usedFilenames: Set<string>
+): Promise<{
+  artifacts: OutputArtifact[];
+  failures: Array<{ tab: chrome.tabs.Tab; error: string }>;
+}> {
+  const artifacts: OutputArtifact[] = [];
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [];
+
+  for (const candidate of pdfTabs) {
+    try {
+      const bytes = await fetchPdfBytes(candidate.sourceUrl);
+      const baseFilename = buildPdfFilename(
+        {
+          title: candidate.tab.title,
+          url: candidate.tab.url,
+          pendingUrl: candidate.tab.pendingUrl
+        },
+        candidate.sourceUrl,
+        now
+      );
+      const filename = ensureUniqueFilename(baseFilename, usedFilenames);
+      artifacts.push({
+        filename,
+        mimeType: PDF_MIME_TYPE,
+        bytes
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      failures.push({ tab: candidate.tab, error: errorMessage });
+    }
+  }
+
+  return { artifacts, failures };
+}
+
+async function downloadArtifact(artifact: OutputArtifact): Promise<number> {
   // Try writing directly via stored directory handle
   try {
     const handle = await loadHandle();
     if (handle) {
       const permission = await handle.queryPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
-        await writeFile(handle, filename, bytes);
+        await writeFile(handle, artifact.filename, artifact.bytes);
         return -1; // No download ID needed
       }
     }
@@ -331,18 +350,18 @@ async function downloadEpub(bytes: Uint8Array, filename: string): Promise<number
   let url = '';
   let shouldRevoke = false;
   if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-    const blobPart: BlobPart = bytes.slice().buffer;
-    const blob = new Blob([blobPart], { type: 'application/epub+zip' });
+    const blobPart: BlobPart = artifact.bytes.slice().buffer;
+    const blob = new Blob([blobPart], { type: artifact.mimeType });
     url = URL.createObjectURL(blob);
     shouldRevoke = true;
   } else {
-    const base64 = base64FromBytes(bytes);
-    url = `data:application/epub+zip;base64,${base64}`;
+    const base64 = base64FromBytes(artifact.bytes);
+    url = `data:${artifact.mimeType};base64,${base64}`;
   }
 
   const downloadId = await downloadsDownload({
     url,
-    filename,
+    filename: artifact.filename,
     saveAs: !settings.useDefaultDownloads
   });
 
@@ -381,14 +400,14 @@ type BuildTabsResult =
       assetsCount: 0;
     };
 
-async function buildEpubFromTabs(tabs: chrome.tabs.Tab[]): Promise<BuildTabsResult> {
+async function buildEpubFromTabs(tabs: chrome.tabs.Tab[], now: Date = new Date()): Promise<BuildTabsResult> {
   const { articles, failures } = await extractArticles(tabs);
   if (articles.length === 0) {
     return { bytes: null, filename: null, failures, articleCount: 0, assetsCount: 0 };
   }
   const embedded = await embedImages(articles);
   const title = articles.length === 1 ? articles[0].title : undefined;
-  const outputFilename = buildFilenameForArticles(embedded.articles);
+  const outputFilename = buildFilenameForArticles(embedded.articles, now);
   const { bytes, filename } = buildEpub(embedded.articles, {
     title,
     assets: embedded.assets,
@@ -403,34 +422,105 @@ async function buildEpubFromTabs(tabs: chrome.tabs.Tab[]): Promise<BuildTabsResu
   };
 }
 
-async function handleSaveTabs(
-  tabs: chrome.tabs.Tab[],
-  { closeTabs = false, emailToKindle = false }: { closeTabs?: boolean; emailToKindle?: boolean } = {}
-): Promise<void> {
-  const result = await buildEpubFromTabs(tabs);
-  if (!result.bytes) {
-    console.warn('No articles extracted', result.failures);
-    return;
-  }
+interface BuildOutputsResult {
+  artifacts: OutputArtifact[];
+  failures: Array<{ tab: chrome.tabs.Tab; error: string }>;
+  articleCount: number;
+  assetsCount: number;
+}
 
-  let emailError: Error | null = null;
-  if (emailToKindle) {
-    try {
-      const settings = await getSettings();
-      const kindleEmail = requireKindleEmail(settings.kindleEmail);
-      if (!settings.testMode) {
-        await emailEpubToKindle(result.bytes, result.filename, kindleEmail);
-      }
-    } catch (err) {
-      emailError = err instanceof Error ? err : new Error(String(err));
-      console.error('Email delivery failed:', emailError.message);
+interface SaveWarningResult {
+  warning: string | null;
+  tooLargeForEmail: string[];
+}
+
+async function buildOutputArtifactsFromTabs(tabs: chrome.tabs.Tab[], now: Date = new Date()): Promise<BuildOutputsResult> {
+  const split = await splitTabsByPdf(tabs);
+  const failures: Array<{ tab: chrome.tabs.Tab; error: string }> = [...split.failures];
+  const artifacts: OutputArtifact[] = [];
+  const usedFilenames = new Set<string>();
+  let articleCount = 0;
+  let assetsCount = 0;
+
+  if (split.articleTabs.length > 0) {
+    const epubResult = await buildEpubFromTabs(split.articleTabs, now);
+    failures.push(...epubResult.failures);
+    articleCount = epubResult.articleCount;
+    assetsCount = epubResult.assetsCount;
+    if (epubResult.bytes && epubResult.filename) {
+      const epubFilename = ensureUniqueFilename(epubResult.filename, usedFilenames);
+      artifacts.push({
+        filename: epubFilename,
+        mimeType: EPUB_MIME_TYPE,
+        bytes: epubResult.bytes
+      });
     }
   }
 
-  await downloadEpub(result.bytes, result.filename);
+  if (split.pdfTabs.length > 0) {
+    const pdfResult = await buildPdfArtifacts(split.pdfTabs, now, usedFilenames);
+    artifacts.push(...pdfResult.artifacts);
+    failures.push(...pdfResult.failures);
+  }
 
-  if (emailError) {
-    throw new Error(`EPUB was downloaded, but email delivery failed: ${emailError.message}`);
+  return {
+    artifacts,
+    failures,
+    articleCount,
+    assetsCount
+  };
+}
+
+async function maybeEmailArtifacts(artifacts: OutputArtifact[], emailToKindle: boolean): Promise<SaveWarningResult> {
+  if (!emailToKindle) {
+    return { warning: null, tooLargeForEmail: [] };
+  }
+
+  try {
+    const settings = await getSettings();
+    const kindleEmail = requireKindleEmail(settings.kindleEmail);
+    if (settings.testMode) {
+      return { warning: null, tooLargeForEmail: [] };
+    }
+    const tooLargeOriginal = await emailArtifactsToKindleCollectTooLarge(artifacts, kindleEmail);
+    const tooLargeForEmail = applyTooLargeEmailPrefix(artifacts, tooLargeOriginal);
+    if (tooLargeForEmail.length > 0) {
+      return {
+        warning: 'Some files are too large for Kindle email and were saved with "TOO LARGE FOR EMAIL" prefixes.',
+        tooLargeForEmail
+      };
+    }
+    return { warning: null, tooLargeForEmail: [] };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Email delivery failed:', message);
+    return { warning: `Email delivery failed: ${message}`, tooLargeForEmail: [] };
+  }
+}
+
+async function handleSaveTabs(
+  tabs: chrome.tabs.Tab[],
+  { closeTabs = false, emailToKindle = false }: { closeTabs?: boolean; emailToKindle?: boolean } = {}
+): Promise<SaveWarningResult> {
+  const result = await buildOutputArtifactsFromTabs(tabs);
+  if (result.artifacts.length === 0) {
+    console.warn('No output files generated', result.failures);
+    return { warning: 'No output files generated.', tooLargeForEmail: [] };
+  }
+  const emailResult = await maybeEmailArtifacts(result.artifacts, emailToKindle);
+
+  const saveErrors: string[] = [];
+  for (const artifact of result.artifacts) {
+    try {
+      await downloadArtifact(artifact);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      saveErrors.push(`${artifact.filename}: ${message}`);
+    }
+  }
+
+  if (saveErrors.length > 0) {
+    throw new Error(`Some files could not be saved: ${saveErrors.join('; ')}`);
   }
 
   if (closeTabs) {
@@ -439,6 +529,7 @@ async function handleSaveTabs(
       await tabsRemove(ids);
     }
   }
+  return emailResult;
 }
 
 async function registerContextMenus(): Promise<void> {
@@ -494,10 +585,20 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const tabs = await getTargetTabs(tab);
   switch (info.menuItemId) {
     case MENU_SAVE:
-      await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: settings.emailToKindle });
+      {
+        const saveResult = await handleSaveTabs(tabs, { closeTabs: false, emailToKindle: settings.emailToKindle });
+        if (saveResult.warning) {
+          console.warn(saveResult.warning);
+        }
+      }
       break;
     case MENU_SAVE_CLOSE:
-      await handleSaveTabs(tabs, { closeTabs: true, emailToKindle: settings.emailToKindle });
+      {
+        const saveResult = await handleSaveTabs(tabs, { closeTabs: true, emailToKindle: settings.emailToKindle });
+        if (saveResult.warning) {
+          console.warn(saveResult.warning);
+        }
+      }
       break;
     default:
       break;
@@ -507,7 +608,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 chrome.action.onClicked.addListener(async () => {
   const tabs = await tabsQuery({ active: true, currentWindow: true });
   if (tabs.length > 0) {
-    await handleSaveTabs(tabs, { closeTabs: false });
+    const saveResult = await handleSaveTabs(tabs, { closeTabs: false });
+    if (saveResult.warning) {
+      console.warn(saveResult.warning);
+    }
   }
 });
 
@@ -645,11 +749,13 @@ chrome.runtime.onMessage.addListener(
           if (selected.length === 0) {
             return { ok: false, error: 'No tabs selected' };
           }
-          await handleSaveTabs(selected, {
+          const saveResult = await handleSaveTabs(selected, {
             closeTabs: Boolean(message.closeTabs),
             emailToKindle: Boolean(message.emailToKindle)
           });
-          return { ok: true };
+          return saveResult.warning || saveResult.tooLargeForEmail.length > 0
+            ? { ok: true, ...(saveResult.warning ? { warning: saveResult.warning } : {}), ...(saveResult.tooLargeForEmail.length > 0 ? { tooLargeForEmail: saveResult.tooLargeForEmail } : {}) }
+            : { ok: true };
         }
         case 'UI_CLEAR_DIRECTORY': {
           await clearHandle();
@@ -682,18 +788,12 @@ chrome.runtime.onMessage.addListener(
           if (selected.length === 0) {
             return { ok: false, error: 'No tabs selected' };
           }
-          const result = await buildEpubFromTabs(selected);
-          if (!result.bytes) {
-            return { ok: false, error: 'No articles extracted' };
+          const result = await buildOutputArtifactsFromTabs(selected);
+          if (result.artifacts.length === 0) {
+            return { ok: false, error: 'No output files generated' };
           }
 
-          if (message.emailToKindle) {
-            const settings = await getSettings();
-            const kindleEmail = requireKindleEmail(settings.kindleEmail);
-            if (!settings.testMode) {
-              await emailEpubToKindle(result.bytes, result.filename, kindleEmail);
-            }
-          }
+          const emailResult = await maybeEmailArtifacts(result.artifacts, Boolean(message.emailToKindle));
 
           if (message.closeTabs) {
             const ids = selected.map((tab) => tab.id).filter((id): id is number => typeof id === 'number');
@@ -702,10 +802,23 @@ chrome.runtime.onMessage.addListener(
             }
           }
 
+          const files = result.artifacts.map((artifact) => ({
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            base64: base64FromBytes(artifact.bytes)
+          }));
+          const epubArtifact = result.artifacts.find((artifact) => artifact.mimeType === EPUB_MIME_TYPE);
           const response: UiBuildEpubResponse = {
             ok: true,
-            epubBase64: base64FromBytes(result.bytes),
-            filename: result.filename
+            files,
+            ...(emailResult.warning ? { warning: emailResult.warning } : {}),
+            ...(emailResult.tooLargeForEmail.length > 0 ? { tooLargeForEmail: emailResult.tooLargeForEmail } : {}),
+            ...(epubArtifact
+              ? {
+                  epubBase64: base64FromBytes(epubArtifact.bytes),
+                  filename: epubArtifact.filename
+                }
+              : {})
           };
           return response;
         }

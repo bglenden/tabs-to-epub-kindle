@@ -2,7 +2,7 @@
 
 ## Problem
 
-You want the extension to send generated EPUB files directly to your Kindle import email.
+You want the extension to send generated output files (EPUB and/or PDFs) directly to your Kindle import email.
 
 The extension can authenticate a Google user with `chrome.identity`, but it **cannot** create Google OAuth app credentials by itself.  
 It needs a pre-created OAuth `client_id` in `manifest.json` before Gmail API login/send can work.
@@ -21,7 +21,7 @@ It needs a pre-created OAuth `client_id` in `manifest.json` before Gmail API log
 2. Put the generated OAuth `client_id` into `manifest.json`.
 3. Rebuild/reload extension.
 4. Configure Amazon Kindle Personal Document settings.
-5. Set Kindle email in popup and use `Save tab(s) to EPUB and email to Kindle`.
+5. Set Kindle email in popup, enable `Email to Kindle`, then save tabs.
 
 ## Step-by-step
 
@@ -67,7 +67,8 @@ It needs a pre-created OAuth `client_id` in `manifest.json` before Gmail API log
 9. Extension runtime setup
    - Open popup.
    - Click `Set Kindle email address`.
-   - Click `Save tab(s) to EPUB and email to Kindle`.
+   - Enable `Email to Kindle`.
+   - Click `Save tab(s) to EPUB` or `Save tab(s) to EPUB and close`.
    - Approve Google OAuth prompt on first use.
 
 ## Troubleshooting
@@ -84,6 +85,10 @@ It needs a pre-created OAuth `client_id` in `manifest.json` before Gmail API log
   - Make sure sender Gmail is on Amazon approved senders list.
   - Confirm Kindle address is correct (`@kindle.com` or region variant shown in your account).
   - Check attachment size limits in Amazon help.
+
+- Some files are not emailed and are renamed with `TOO LARGE FOR EMAIL `
+  - This means the file exceeded Gmail API size limits after encoding.
+  - The file is still saved locally and shown in popup warning/alert.
 
 ## Why the stable manifest key matters
 

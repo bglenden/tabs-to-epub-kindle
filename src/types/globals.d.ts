@@ -9,7 +9,7 @@ declare global {
     | { type: 'TEST_SAVE_TAB_IDS'; tabIds: number[] };
 
   type TestResponse =
-    | { ok: true }
+    | { ok: true; warning?: string; tooLargeForEmail?: string[] }
     | {
         ok: true;
         bytesBase64: string;
@@ -17,6 +17,8 @@ declare global {
         failures: Array<{ tab?: chrome.tabs.Tab; error: string }>;
         articleCount: number;
         assetsCount: number;
+        warning?: string;
+        tooLargeForEmail?: string[];
       }
     | { ok: true; tabs: Array<{ id?: number; url?: string; title?: string; active?: boolean }> }
     | { ok: false; error: string; failures?: Array<{ tab?: chrome.tabs.Tab; error: string }> };
@@ -31,10 +33,22 @@ declare global {
     | { type: 'UI_GET_SETTINGS' };
 
   type UiResponse =
-    | { ok: true }
+    | { ok: true; warning?: string; tooLargeForEmail?: string[] }
     | { ok: false; error: string }
-    | { ok: true; settings: { testMode: boolean; kindleEmail: string | null; useDefaultDownloads: boolean; emailToKindle: boolean } }
-    | { ok: true; epubBase64: string; filename: string };
+    | {
+        ok: true;
+        warning?: string;
+        tooLargeForEmail?: string[];
+        settings: { testMode: boolean; kindleEmail: string | null; useDefaultDownloads: boolean; emailToKindle: boolean };
+      }
+    | {
+        ok: true;
+        warning?: string;
+        tooLargeForEmail?: string[];
+        files: Array<{ filename: string; mimeType: string; base64: string }>;
+        epubBase64?: string;
+        filename?: string;
+      };
 
   interface TabToEpubExtractor {
     id: string;

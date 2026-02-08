@@ -28,7 +28,33 @@ function isSettingsResponse(response: UiResponse): response is UiResponse & { se
 }
 
 function isBuildEpubResponse(response: UiResponse): response is UiBuildEpubResponse {
-  return response.ok && 'epubBase64' in response;
+  return response.ok && 'files' in response && Array.isArray(response.files);
+}
+
+function getResponseWarning(response: UiResponse): string | null {
+  if (!response.ok) {
+    return null;
+  }
+  if (!('warning' in response)) {
+    return null;
+  }
+  return typeof response.warning === 'string' && response.warning.trim() ? response.warning : null;
+}
+
+function getTooLargeForEmail(response: UiResponse): string[] {
+  if (!response.ok || !('tooLargeForEmail' in response) || !Array.isArray(response.tooLargeForEmail)) {
+    return [];
+  }
+  return response.tooLargeForEmail.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()));
+}
+
+function showTooLargeEmailAlert(filenames: string[]): void {
+  if (filenames.length === 0) {
+    return;
+  }
+  window.alert(
+    `Some files are too large for Kindle email and were saved only:\n\n${filenames.map((name) => `- ${name}`).join('\n')}`
+  );
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -144,15 +170,15 @@ async function clearDirectory(): Promise<void> {
 async function saveViaDirectoryHandle(
   tabIds: number[],
   options: { closeTabs?: boolean; emailToKindle?: boolean } = {}
-): Promise<boolean> {
+): Promise<{ savedCount: number; warning: string | null; tooLargeForEmail: string[] }> {
   const state = await getDirectoryState();
-  if (!state.handle) return false;
+  if (!state.handle) return { savedCount: 0, warning: null, tooLargeForEmail: [] };
 
   if (state.permission === 'prompt') {
     const result = await state.handle.requestPermission({ mode: 'readwrite' });
-    if (result !== 'granted') return false;
+    if (result !== 'granted') return { savedCount: 0, warning: null, tooLargeForEmail: [] };
   } else if (state.permission !== 'granted') {
-    return false;
+    return { savedCount: 0, warning: null, tooLargeForEmail: [] };
   }
 
   const response = await sendMessage({
@@ -164,9 +190,16 @@ async function saveViaDirectoryHandle(
   if (!response.ok) throw new Error(response.error);
   if (!isBuildEpubResponse(response)) throw new Error('Unexpected response');
 
-  const bytes = base64ToBytes(response.epubBase64);
-  await writeFile(state.handle, response.filename, bytes);
-  return true;
+  for (const file of response.files) {
+    const bytes = base64ToBytes(file.base64);
+    await writeFile(state.handle, file.filename, bytes);
+  }
+
+  return {
+    savedCount: response.files.length,
+    warning: getResponseWarning(response),
+    tooLargeForEmail: getTooLargeForEmail(response)
+  };
 }
 
 async function saveKindleEmail(): Promise<void> {
@@ -200,9 +233,12 @@ async function handleAction(action: string): Promise<void> {
     const options = { closeTabs, emailToKindle };
 
     // Try writing directly via directory handle
-    const wroteDirectly = await saveViaDirectoryHandle(tabIds, options);
-    if (wroteDirectly) {
-      setStatus('Saved to folder.');
+    const directResult = await saveViaDirectoryHandle(tabIds, options);
+    if (directResult.savedCount > 0) {
+      const savedMessage =
+        directResult.savedCount === 1 ? 'Saved 1 file to folder.' : `Saved ${directResult.savedCount} files to folder.`;
+      setStatus(directResult.warning ? `${savedMessage} ${directResult.warning}` : savedMessage, Boolean(directResult.warning));
+      showTooLargeEmailAlert(directResult.tooLargeForEmail);
       return;
     }
 
@@ -214,7 +250,9 @@ async function handleAction(action: string): Promise<void> {
       emailToKindle
     });
     if (!response.ok) throw new Error(response.error);
-    setStatus('Save started.');
+    const warning = getResponseWarning(response);
+    setStatus(warning ? `Save started. ${warning}` : 'Save started.', Boolean(warning));
+    showTooLargeEmailAlert(getTooLargeForEmail(response));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Request failed';
     setStatus(message, true);

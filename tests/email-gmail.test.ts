@@ -5,11 +5,18 @@ const request = {
   to: 'kindle@example.com',
   subject: 'Tabs to EPUB & Kindle',
   bodyText: 'Attached EPUB from Tabs to EPUB & Kindle.',
-  attachment: {
-    filename: 'example.epub',
-    mimeType: 'application/epub+zip',
-    bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
-  }
+  attachments: [
+    {
+      filename: 'example.epub',
+      mimeType: 'application/epub+zip',
+      bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+    },
+    {
+      filename: 'paper.pdf',
+      mimeType: 'application/pdf',
+      bytes: new Uint8Array([9, 10, 11, 12])
+    }
+  ]
 };
 
 const mime = buildMimeMessage(request);
@@ -17,6 +24,7 @@ assert.match(mime, /To: kindle@example\.com/);
 assert.match(mime, /Subject: Tabs to EPUB & Kindle/);
 assert.match(mime, /Content-Type: multipart\/mixed; boundary="/);
 assert.match(mime, /Content-Disposition: attachment; filename="example\.epub"/);
+assert.match(mime, /Content-Disposition: attachment; filename="paper\.pdf"/);
 
 const encoded = encodeBase64Url('hello');
 assert.equal(encoded, 'aGVsbG8');
@@ -86,7 +94,7 @@ const largeRequest = {
   to: 'kindle@example.com',
   subject: 'Big EPUB',
   bodyText: '',
-  attachment: { filename: 'big.epub', mimeType: 'application/epub+zip', bytes: largeBytes }
+  attachments: [{ filename: 'big.epub', mimeType: 'application/epub+zip', bytes: largeBytes }]
 };
 let sizeCheckTokenCalls = 0;
 const sizeCheckClient = {

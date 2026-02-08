@@ -10,6 +10,8 @@ import type { TestMessage, TestResponse, UiMessage, UiResponse, UiBuildEpubRespo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionPath = path.resolve(__dirname, '../../dist');
 const baseUrl = 'https://example.test';
+const PDF_BYTES = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n', 'utf8');
+const TOO_LARGE_PDF_BYTES = Buffer.concat([PDF_BYTES, Buffer.alloc(27 * 1024 * 1024, 0x20)]);
 
 interface ExtensionLaunchResult {
   context: BrowserContext;
@@ -273,15 +275,294 @@ test('UI_BUILD_EPUB returns base64 epub and filename', async () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.files.length).toBe(1);
     expect(result.epubBase64).toBeDefined();
     expect(result.filename).toMatch(/\.epub$/);
+    const epubFile = result.files.find((file) => file.mimeType === 'application/epub+zip');
+    expect(epubFile).toBeDefined();
 
     // Verify the EPUB content
-    const { fileMap } = decodeZip(result.epubBase64);
+    const { fileMap } = decodeZip(epubFile!.base64);
     const section = fileMap.get('OEBPS/section-1.xhtml') || '';
     const sectionText = extractText(section);
     expect(sectionText).toContain('Build Test Article');
     expect(sectionText).toContain('Content for the UI_BUILD_EPUB test');
+  } finally {
+    await context.close();
+  }
+});
+
+test('UI_BUILD_EPUB returns a PDF file for PDF tabs', async () => {
+  const { context, testPage } = await launchWithExtension();
+
+  try {
+    await context.route(`${baseUrl}/paper.pdf`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: PDF_BYTES
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/paper.pdf`, { waitUntil: 'load' });
+    await page.bringToFront();
+
+    interface TestListTabsResponse {
+      ok: boolean;
+      tabs: Array<{ id?: number; url?: string }>;
+    }
+    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
+    const tab = list.tabs.find((entry) => entry.url?.includes('paper.pdf'));
+    expect(tab?.id).toBeDefined();
+
+    const result = await sendUiMessage<UiBuildEpubResponse>(testPage, {
+      type: 'UI_BUILD_EPUB',
+      tabIds: [tab!.id!]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.files.length).toBe(1);
+    const pdf = result.files[0];
+    expect(pdf.mimeType).toBe('application/pdf');
+    expect(pdf.filename).toMatch(/\.pdf$/);
+    expect(Buffer.from(pdf.base64, 'base64').subarray(0, 5).toString('utf8')).toBe('%PDF-');
+    expect(result.epubBase64).toBeUndefined();
+  } finally {
+    await context.close();
+  }
+});
+
+test('UI_BUILD_EPUB detects PDF source from wrapper page heuristics', async () => {
+  const { context, testPage } = await launchWithExtension();
+
+  try {
+    await context.route(`${baseUrl}/wrapped-paper.html`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>Wrapped Paper</title></head>
+  <body>
+    <h1>Wrapper UI</h1>
+    <script>
+      (function () {
+        // Simulates a PDF wrapper app that fetches the true PDF URL at runtime.
+        const url = '${baseUrl}/fetcher/paper-heuristic-v1.pdf';
+        window.__paperPromise = fetch(url);
+      })();
+    </script>
+  </body>
+</html>`
+      })
+    );
+    await context.route(`${baseUrl}/fetcher/paper-heuristic-v1.pdf`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: PDF_BYTES
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/wrapped-paper.html`, { waitUntil: 'load' });
+    await page.bringToFront();
+
+    interface TestListTabsResponse {
+      ok: boolean;
+      tabs: Array<{ id?: number; url?: string }>;
+    }
+    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
+    const tab = list.tabs.find((entry) => entry.url === `${baseUrl}/wrapped-paper.html`);
+    expect(tab?.id).toBeDefined();
+
+    const result = await sendUiMessage<UiBuildEpubResponse>(testPage, {
+      type: 'UI_BUILD_EPUB',
+      tabIds: [tab!.id!]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0].mimeType).toBe('application/pdf');
+    expect(result.files[0].filename).toMatch(/\.pdf$/);
+    expect(Buffer.from(result.files[0].base64, 'base64').subarray(0, 5).toString('utf8')).toBe('%PDF-');
+  } finally {
+    await context.close();
+  }
+});
+
+test('UI_BUILD_EPUB skips invalid high-priority PDF candidates from wrapper pages', async () => {
+  const { context, testPage } = await launchWithExtension();
+
+  try {
+    await context.route(`${baseUrl}/wrapped-priority.html`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>Wrapped Priority</title></head>
+  <body>
+    <h1>Wrapper Priority</h1>
+    <iframe src="${baseUrl}/broken-priority.pdf"></iframe>
+    <script>
+      (function () {
+        const url = '${baseUrl}/valid-priority.pdf';
+        window.__paperPromise = fetch(url);
+      })();
+    </script>
+  </body>
+</html>`
+      })
+    );
+    await context.route(`${baseUrl}/broken-priority.pdf`, (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: '{"error":"not available"}'
+      })
+    );
+    await context.route(`${baseUrl}/valid-priority.pdf`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: PDF_BYTES
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/wrapped-priority.html`, { waitUntil: 'load' });
+    await page.bringToFront();
+
+    interface TestListTabsResponse {
+      ok: boolean;
+      tabs: Array<{ id?: number; url?: string }>;
+    }
+    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
+    const tab = list.tabs.find((entry) => entry.url === `${baseUrl}/wrapped-priority.html`);
+    expect(tab?.id).toBeDefined();
+
+    const result = await sendUiMessage<UiBuildEpubResponse>(testPage, {
+      type: 'UI_BUILD_EPUB',
+      tabIds: [tab!.id!]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0].mimeType).toBe('application/pdf');
+    expect(Buffer.from(result.files[0].base64, 'base64').subarray(0, 5).toString('utf8')).toBe('%PDF-');
+  } finally {
+    await context.close();
+  }
+});
+
+test('UI_SAVE_TAB_IDS flags oversized email attachments and prefixes filenames', async () => {
+  const { context, testPage } = await launchWithExtension();
+
+  try {
+    await context.route(`${baseUrl}/too-large-paper.pdf`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: TOO_LARGE_PDF_BYTES
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/too-large-paper.pdf`, { waitUntil: 'load' });
+    await page.bringToFront();
+
+    interface TestListTabsResponse {
+      ok: boolean;
+      tabs: Array<{ id?: number; url?: string }>;
+    }
+    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
+    const tab = list.tabs.find((entry) => entry.url?.includes('too-large-paper.pdf'));
+    expect(tab?.id).toBeDefined();
+
+    await sendTestMessage(testPage, { type: 'TEST_SET_MODE', enabled: false });
+    await sendUiMessage(testPage, { type: 'UI_SET_KINDLE_EMAIL', email: 'kindle@example.com' });
+
+    const result = await sendUiMessage<UiResponse>(testPage, {
+      type: 'UI_SAVE_TAB_IDS',
+      tabIds: [tab!.id!],
+      emailToKindle: true
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warning).toMatch(/too large/i);
+    expect(result.tooLargeForEmail).toBeDefined();
+    expect(result.tooLargeForEmail?.length).toBe(1);
+    expect(result.tooLargeForEmail?.[0]).toMatch(/^TOO LARGE FOR EMAIL /);
+  } finally {
+    await context.close();
+  }
+});
+
+test('UI_BUILD_EPUB returns EPUB and PDF files for mixed tabs', async () => {
+  const { context, testPage } = await launchWithExtension();
+
+  try {
+    await context.route(`${baseUrl}/mixed-article.html`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>Mixed Test Article</title></head>
+  <body>
+    <article>
+      <h1>Mixed Test Article</h1>
+      <p>Content for mixed HTML and PDF tab testing.</p>
+    </article>
+  </body>
+</html>`
+      })
+    );
+    await context.route(`${baseUrl}/mixed-paper.pdf`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: PDF_BYTES
+      })
+    );
+
+    const articlePage = await context.newPage();
+    await articlePage.goto(`${baseUrl}/mixed-article.html`, { waitUntil: 'load' });
+    const pdfPage = await context.newPage();
+    await pdfPage.goto(`${baseUrl}/mixed-paper.pdf`, { waitUntil: 'load' });
+    await pdfPage.bringToFront();
+
+    interface TestListTabsResponse {
+      ok: boolean;
+      tabs: Array<{ id?: number; url?: string }>;
+    }
+    const list = await sendTestMessage<TestListTabsResponse>(testPage, { type: 'TEST_LIST_TABS' });
+    const articleTab = list.tabs.find((entry) => entry.url === `${baseUrl}/mixed-article.html`);
+    const pdfTab = list.tabs.find((entry) => entry.url?.includes('mixed-paper.pdf'));
+    const articleTabId = articleTab?.id;
+    const pdfTabId = pdfTab?.id;
+    expect(articleTabId).toBeDefined();
+    expect(pdfTabId).toBeDefined();
+
+    const result = await sendUiMessage<UiBuildEpubResponse>(testPage, {
+      type: 'UI_BUILD_EPUB',
+      tabIds: [articleTabId!, pdfTabId!]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.files.length).toBe(2);
+    const epubFile = result.files.find((file) => file.mimeType === 'application/epub+zip');
+    const pdfFile = result.files.find((file) => file.mimeType === 'application/pdf');
+    expect(epubFile).toBeDefined();
+    expect(pdfFile).toBeDefined();
+
+    const { fileMap } = decodeZip(epubFile!.base64);
+    const section = fileMap.get('OEBPS/section-1.xhtml') || '';
+    expect(extractText(section)).toContain('Content for mixed HTML and PDF tab testing');
+    expect(Buffer.from(pdfFile!.base64, 'base64').subarray(0, 5).toString('utf8')).toBe('%PDF-');
   } finally {
     await context.close();
   }

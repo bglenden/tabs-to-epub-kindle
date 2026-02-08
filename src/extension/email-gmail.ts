@@ -8,7 +8,7 @@ export interface GmailSendRequest {
   to: string;
   subject: string;
   bodyText: string;
-  attachment: GmailAttachment;
+  attachments: GmailAttachment[];
 }
 
 export interface GmailTokenClient {
@@ -32,7 +32,7 @@ function sanitizeHeaderValue(value: string): string {
 
 function sanitizeFilename(filename: string): string {
   const clean = String(filename).replace(/["\\\r\n]+/g, '_').trim();
-  return clean || 'document.epub';
+  return clean || 'document.bin';
 }
 
 function wrapBase64(value: string, lineLength = 76): string {
@@ -113,12 +113,12 @@ export function buildMimeMessage(request: GmailSendRequest): string {
   const to = sanitizeHeaderValue(request.to);
   const subject = sanitizeHeaderValue(request.subject);
   const bodyText = String(request.bodyText || '');
-  const filename = sanitizeFilename(request.attachment.filename);
-  const mimeType = sanitizeHeaderValue(request.attachment.mimeType || 'application/octet-stream');
-  const attachmentBase64 = wrapBase64(base64FromBytes(request.attachment.bytes));
+  const attachments = Array.isArray(request.attachments) ? request.attachments : [];
+  if (attachments.length === 0) {
+    throw new Error('Gmail message requires at least one attachment.');
+  }
   const boundary = `tabstoepub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-
-  return [
+  const sections: string[] = [
     `To: ${to}`,
     `Subject: ${subject}`,
     'MIME-Version: 1.0',
@@ -129,16 +129,26 @@ export function buildMimeMessage(request: GmailSendRequest): string {
     'Content-Transfer-Encoding: 7bit',
     '',
     bodyText,
-    '',
-    `--${boundary}`,
-    `Content-Type: ${mimeType}; name="${filename}"`,
-    'Content-Transfer-Encoding: base64',
-    `Content-Disposition: attachment; filename="${filename}"`,
-    '',
-    attachmentBase64,
-    `--${boundary}--`,
     ''
-  ].join('\r\n');
+  ];
+
+  for (const attachment of attachments) {
+    const filename = sanitizeFilename(attachment.filename);
+    const mimeType = sanitizeHeaderValue(attachment.mimeType || 'application/octet-stream');
+    const attachmentBase64 = wrapBase64(base64FromBytes(attachment.bytes));
+    sections.push(
+      `--${boundary}`,
+      `Content-Type: ${mimeType}; name="${filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${filename}"`,
+      '',
+      attachmentBase64,
+      ''
+    );
+  }
+
+  sections.push(`--${boundary}--`, '');
+  return sections.join('\r\n');
 }
 
 // Gmail API request body limit: 35 MB
@@ -149,13 +159,19 @@ export async function sendGmailMessage(
   tokenClient: GmailTokenClient,
   fetchFn: typeof fetch = fetch
 ): Promise<void> {
+  const attachments = Array.isArray(request.attachments) ? request.attachments : [];
+  if (attachments.length === 0) {
+    throw new Error('Cannot send a Gmail message without attachments.');
+  }
+
+  const totalBytes = attachments.reduce((sum, attachment) => sum + attachment.bytes.length, 0);
   const raw = encodeBase64Url(buildMimeMessage(request));
 
   // The JSON body is {"raw":"<base64url>"} — all ASCII, so length === byte size.
   if (raw.length + 10 > GMAIL_MAX_BODY_BYTES) {
-    const sizeMB = (request.attachment.bytes.length / (1024 * 1024)).toFixed(1);
+    const sizeMB = (totalBytes / (1024 * 1024)).toFixed(1);
     throw new Error(
-      `Attachment is too large to send via Gmail (${sizeMB} MB). ` +
+      `Attachments are too large to send via Gmail (${sizeMB} MB total). ` +
         'The Gmail API limit is 35 MB, which allows roughly 20 MB attachments after encoding.'
     );
   }
